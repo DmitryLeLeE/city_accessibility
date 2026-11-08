@@ -60,7 +60,7 @@ npm run dist          # собрать установщик для текуще�
 
 Релиз выпускает workflow `.github/workflows/release.yml`: по тегу `v*` он запускает тесты, собирает Windows (обязательно), Linux и macOS и прикрепляет файлы к GitHub Release.
 ```bash
-git tag v1.0.0 && git push origin v1.0.0
+git tag v1.0.0 && git push origin v1.0.0   # либо Actions → Release desktop app → Run workflow
 ```
 
 ## Быстрый старт
