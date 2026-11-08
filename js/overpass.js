@@ -4,36 +4,31 @@ import { CONFIG, CATEGORIES } from './config.js';
 import { geometryAreaM2, sampleRing } from './geo.js';
 import { storeGet, storePut } from './store.js';
 
-const sleep = (ms, signal) => new Promise((resolve, reject) => {
-  const t = setTimeout(resolve, ms);
-  signal?.addEventListener('abort', () => { clearTimeout(t); reject(new DOMException('Aborted', 'AbortError')); }, { once: true });
-});
+import { getLang, _ } from './i18n.js';
+import { MirrorPool, withFailover, httpError } from './failover.js';
 
-let endpointShift = 0;
+export const overpassPool = new MirrorPool(CONFIG.overpass);
+let netLogger = null;
+/** Подписка на события сети (переключение зеркал) — для журнала расчёта. */
+export const setNetLogger = fn => { netLogger = fn; };
 
-export async function runOverpass(query, { signal, retries = 4 } = {}) {
-  let lastErr;
-  for (let attempt = 0; attempt < retries; attempt++) {
-    const url = CONFIG.overpass[(endpointShift + attempt) % CONFIG.overpass.length];
-    try {
-      const res = await fetch(url, {
-        method: 'POST',
-        body: 'data=' + encodeURIComponent(query),
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        signal,
-      });
-      if (!res.ok) throw new Error('HTTP ' + res.status);
-      const json = await res.json();
-      if (json.remark && /runtime error|timed out|out of memory/i.test(json.remark)) throw new Error(json.remark);
-      endpointShift = (endpointShift + attempt) % CONFIG.overpass.length;
-      return json;
-    } catch (e) {
-      if (e.name === 'AbortError') throw e;
-      lastErr = e;
-      await sleep(900 * (attempt + 1), signal);
-    }
-  }
-  throw new Error('Overpass недоступен: ' + (lastErr?.message || 'неизвестная ошибка'));
+export async function runOverpass(query, { signal, rounds = CONFIG.retryRounds, fetchImpl } = {}) {
+  const doFetch = fetchImpl || ((...a) => fetch(...a));
+  return withFailover(overpassPool, async (url, sig) => {
+    const res = await doFetch(url, {
+      method: 'POST',
+      body: 'data=' + encodeURIComponent(query),
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      signal: sig,
+    });
+    if (!res.ok) throw httpError(res);
+    const text = await res.text();
+    let json;
+    try { json = JSON.parse(text); } catch { throw new Error(_('ответ не JSON (сервер перегружен?)')); }
+    if (json.remark && /runtime error|timed out|out of memory|too many requests/i.test(json.remark)) throw new Error(json.remark);
+    if (!Array.isArray(json.elements)) throw new Error(_('в ответе нет elements'));
+    return json;
+  }, { signal, rounds, timeoutMs: CONFIG.requestTimeoutMs, onEvent: m => netLogger?.(m) });
 }
 
 // ── тайлы ───────────────────────────────────────────────────────────────────
@@ -258,19 +253,40 @@ out body geom;`, { signal });
   const fc = toGeoJSON(json, { flatProperties: true });
   return fc.features
     .filter(f => f.geometry && (f.geometry.type === 'Polygon' || f.geometry.type === 'MultiPolygon'))
-    .map(f => ({ id: f.properties.id, name: f.properties['name:ru'] || f.properties.name || `Район ${f.properties.id}`, geometry: f.geometry }));
+    .map(f => ({ id: f.properties.id, name: f.properties[`name:${getLang()}`] || f.properties.name || `${_('Район')} ${f.properties.id}`, geometry: f.geometry }));
 }
 
 // ── поиск места ─────────────────────────────────────────────────────────────
 
-export async function geocode(q, { signal } = {}) {
-  const url = `${CONFIG.nominatim}?format=jsonv2&limit=6&accept-language=ru&q=${encodeURIComponent(q)}`;
-  const res = await fetch(url, { signal });
-  if (!res.ok) throw new Error('Геокодер вернул HTTP ' + res.status);
-  const arr = await res.json();
+const geocodePool = new MirrorPool(CONFIG.geocoders.map(x => x.url));
+
+function parseNominatim(arr) {
   return arr.map(r => ({
-    name: r.display_name,
-    lat: Number(r.lat), lon: Number(r.lon),
+    name: r.display_name, lat: Number(r.lat), lon: Number(r.lon),
     bbox: [Number(r.boundingbox[2]), Number(r.boundingbox[0]), Number(r.boundingbox[3]), Number(r.boundingbox[1])],
   }));
+}
+export function parsePhoton(json) {
+  return (json.features || []).filter(f => f.geometry?.coordinates).map(f => {
+    const p = f.properties || {}, [lon, lat] = f.geometry.coordinates;
+    const name = [p.name, p.street && [p.street, p.housenumber].filter(Boolean).join(' '), p.district, p.city || p.town || p.village, p.state, p.country].filter(Boolean).join(', ');
+    const ex = p.extent; // [minLon, maxLat, maxLon, minLat]
+    const d = 0.004;
+    return { name: name || _('Без названия'), lat, lon, bbox: ex ? [ex[0], ex[3], ex[2], ex[1]] : [lon - d, lat - d, lon + d, lat + d] };
+  });
+}
+
+/** Поиск места: Nominatim, при сбое — Photon (перебор всех геокодеров с повторами). */
+export async function geocode(q, { signal, lang = 'ru', fetchImpl } = {}) {
+  const doFetch = fetchImpl || ((...a) => fetch(...a));
+  const types = Object.fromEntries(CONFIG.geocoders.map(x => [x.url, x.type]));
+  return withFailover(geocodePool, async (url, sig) => {
+    const full = types[url] === 'photon'
+      ? `${url}?limit=6&lang=${lang === 'ru' ? 'default' : lang}&q=${encodeURIComponent(q)}`
+      : `${url}?format=jsonv2&limit=6&accept-language=${lang}&q=${encodeURIComponent(q)}`;
+    const res = await doFetch(full, { signal: sig });
+    if (!res.ok) throw httpError(res);
+    const json = await res.json();
+    return types[url] === 'photon' ? parsePhoton(json) : parseNominatim(json);
+  }, { signal, rounds: 2, timeoutMs: 20000, onEvent: m => netLogger?.(m) });
 }

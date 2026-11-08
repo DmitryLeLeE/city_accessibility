@@ -18,8 +18,16 @@ export const CONFIG = {
     'https://overpass-api.de/api/interpreter',
     'https://overpass.kumi.systems/api/interpreter',
     'https://overpass.private.coffee/api/interpreter',
+    'https://lz4.overpass-api.de/api/interpreter',
+    'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
   ],
-  nominatim: 'https://nominatim.openstreetmap.org/search',
+  // геокодеры по очереди: если первый недоступен, пробуем следующий
+  geocoders: [
+    { type: 'nominatim', url: 'https://nominatim.openstreetmap.org/search' },
+    { type: 'photon', url: 'https://photon.komoot.io/api/' },
+  ],
+  requestTimeoutMs: 70000, // таймаут одной попытки к серверу
+  retryRounds: 3,          // сколько раз пройти по всем зеркалам
 
   graph: {
     maxSegmentM: 40,       // рёбра длиннее делятся — точнее привязка и контуры

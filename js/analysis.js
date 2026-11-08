@@ -4,6 +4,7 @@
 import { CONFIG, CATEGORIES } from './config.js';
 import { dijkstra, endpointPenalty, tracePath } from './graph.js';
 import { isochroneGeometry, gridToMultiPolygon } from './isochrone.js';
+import { _ } from './i18n.js';
 import { makeProjector, pointInGeometry, geometryBBox } from './geo.js';
 
 export const CAT_BY_ID = Object.fromEntries(CATEGORIES.map(c => [c.id, c]));
@@ -254,10 +255,10 @@ function zoneOutline(members, proj, cellM) {
 const fmt = (x, d = 1) => (x === Infinity || x == null ? '' : x.toFixed(d));
 
 export function districtsToCSV(result) {
-  const head = ['Район', 'Вес (жители-прокси)', 'Индекс доступности'];
+  const head = [_('Район'), _('Вес (жители-прокси)'), _('Индекс доступности')];
   for (const c of result.catIds) {
-    head.push(`${CAT_BY_ID[c].label}: медиана, мин`);
-    for (const b of result.bands) head.push(`${CAT_BY_ID[c].label}: ≤${b} мин, %`);
+    head.push(`${_(CAT_BY_ID[c].label)}: ${_('медиана, мин')}`);
+    for (const b of result.bands) head.push(`${_(CAT_BY_ID[c].label)}: ≤${b} ${_('мин, %')}`);
   }
   const rows = [head];
   for (const d of result.districts) {
@@ -313,7 +314,7 @@ export function makeGridGroups(bbox, cellM) {
       const ring = [[x, y], [x + cellM, y], [x + cellM, y + cellM], [x, y + cellM], [x, y]]
         .map(([px, py]) => { const [la, lo] = proj.toLL(px, py); return [lo, la]; });
       const geometry = { type: 'Polygon', coordinates: [ring] };
-      groups.push({ id: `g${col}_${row}`, name: `Квадрат ${col + 1}-${row + 1}`, geometry, isRect: true, bbox: geometryBBox(geometry), coverage: 1 });
+      groups.push({ id: `g${col}_${row}`, name: `${_('Квадрат')} ${col + 1}-${row + 1}`, geometry, isRect: true, bbox: geometryBBox(geometry), coverage: 1 });
     }
   }
   return groups;

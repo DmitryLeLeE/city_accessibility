@@ -5,6 +5,10 @@ import { F_SIGNAL, F_ZEBRA, F_MARKED, F_GATE, F_BLOCKED } from './walkmodel.js';
 import { loadSavedParams, setParams, restoreDefaults } from './params.js';
 import { methodHTML, readParamsFrom } from './method.js';
 import { storeClear, storeCount, cacheStats } from './store.js';
+import { _, setLang, getLang, locale, detectLang, saveLang, translateDom } from './i18n.js';
+import { setNetLogger } from './overpass.js';
+
+setLang(detectLang());
 import {
   prepareCategories, isochroneReport, buildDemand, computeAnalysis, makeGridGroups,
   CAT_BY_ID, districtsToCSV, analysisToGeoJSON, isochronesToGeoJSON, routeToPoi,
@@ -14,7 +18,9 @@ import { bboxAround, expandBBox, bboxSpanKm, geometryBBox } from './geo.js';
 const $ = sel => document.querySelector(sel);
 const esc = s => String(s).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
 const tick = () => new Promise(r => setTimeout(r, 0));
-const nf = (x, d = 1) => x.toLocaleString('ru-RU', { maximumFractionDigits: d });
+const nf = (x, d = 1) => x.toLocaleString(locale(), { maximumFractionDigits: d });
+const catLabel = c => _(c.label);
+const catShort = c => catLabel(c).split(' ')[0];
 const fmtMin = x => (x == null || !Number.isFinite(x) ? '—' : nf(x, 1));
 
 const state = {
@@ -41,7 +47,7 @@ const baseMaps = {
   'OpenStreetMap': L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
     maxZoom: 19, attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
   }),
-  'Светлая (Esri)': L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}', {
+  [_('Светлая (Esri)')]: L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}', {
     maxZoom: 16, attribution: 'Tiles © Esri — Esri, HERE, Garmin, © OpenStreetMap contributors',
   }),
 };
@@ -71,9 +77,9 @@ function startTask() {
   return state.abort.signal;
 }
 function fail(e) {
-  if (e?.name === 'AbortError') return setStatus('Отменено.');
+  if (e?.name === 'AbortError') return setStatus(_('Отменено.'));
   console.error(e);
-  setStatus(e?.message || 'Что-то пошло не так.', false, true);
+  setStatus(e?.message || _('Что-то пошло не так.'), false, true);
 }
 $('#cancel').addEventListener('click', () => state.abort?.abort());
 
@@ -85,8 +91,8 @@ function logStart(title) {
   logAdd(title);
 }
 function logAdd(msg) {
-  const t = ((performance.now() - logState.t0) / 1000).toFixed(1).padStart(5);
-  logState.lines.push(`[${t} с] ${msg}`);
+  const ts = ((performance.now() - logState.t0) / 1000).toFixed(1).padStart(5);
+  logState.lines.push(`[${ts} ${_('с')}] ${msg}`);
   $('#log').textContent = logState.lines.join('\n');
   $('#log-box').hidden = false;
 }
@@ -98,8 +104,8 @@ function logGraph(g, nodeTags) {
     if (f & F_GATE) gate++;
     if (f & F_BLOCKED) blk++;
   }
-  logAdd(`граф: ${g.validCount} узлов, ${g.edges} рёбер, ${nf(g.lengthKm, 0)} км; светофоров ${sig}, «зебр» ${zeb}, размеченных переходов ${mk}, калиток ${gate}, закрытых проходов ${blk}`);
-  logAdd(`параметры: скорость ${nf(state.speedKmh, 1)} км/ч, ожидание на светофоре (primary) ${nf(WALK.signalWait[5], 1)} с, без регулирования (primary) ${nf(WALK.unmarkedWait[5], 1)} с`);
+  logAdd(_('граф: {nodes} узлов, {edges} рёбер, {km} км; светофоров {sig}, «зебр» {zeb}, размеченных переходов {mk}, калиток {gate}, закрытых проходов {blk}', { nodes: g.validCount, edges: g.edges, km: nf(g.lengthKm, 0), sig, zeb, mk, gate, blk }));
+  logAdd(_('параметры: скорость {v} км/ч, ожидание на светофоре (primary) {s} с, без регулирования (primary) {u} с', { v: nf(state.speedKmh, 1), s: nf(WALK.signalWait[5], 1), u: nf(WALK.unmarkedWait[5], 1) }));
 }
 
 // ── параметры ───────────────────────────────────────────────────────────────
@@ -117,7 +123,7 @@ function activeCatIds() { return CATEGORIES.filter(c => state.active.has(c.id)).
 function buildCatsUI() {
   $('#cats').innerHTML = CATEGORIES.map(c => `
     <label class="cat"><input type="checkbox" data-cat="${c.id}" ${state.active.has(c.id) ? 'checked' : ''}>
-      <span class="dot" style="background:${c.color}"></span>${esc(c.label)}</label>`).join('');
+      <span class="dot" style="background:${c.color}"></span>${esc(catLabel(c))}</label>`).join('');
   $('#cats').addEventListener('change', e => {
     const id = e.target.dataset.cat;
     if (!id) return;
@@ -136,7 +142,7 @@ function scheduleRecalc() {
 }
 $('#speed').addEventListener('input', e => {
   state.speedKmh = Number(e.target.value);
-  $('#speed-out').textContent = nf(state.speedKmh, 1) + ' км/ч';
+  $('#speed-out').textContent = nf(state.speedKmh, 1) + ' ' + _('км/ч');
   scheduleRecalc();
 });
 $('#bands').addEventListener('change', scheduleRecalc);
@@ -176,12 +182,12 @@ $('#search').addEventListener('submit', async e => {
   if (!q) return;
   const list = $('#search-results');
   try {
-    setStatus('Ищу место…', true);
-    const res = await geocode(q, { signal: startTask() });
-    setStatus('Готово к работе.');
+    setStatus(_('Ищу место…'), true);
+    const res = await geocode(q, { signal: startTask(), lang: getLang() });
+    setStatus(_('Готово к работе.'));
     list.innerHTML = res.length
       ? res.map((r, i) => `<li><button type="button" data-i="${i}">${esc(r.name)}</button></li>`).join('')
-      : '<li><button type="button" disabled>Ничего не найдено</button></li>';
+      : `<li><button type="button" disabled>${_('Ничего не найдено')}</button></li>`;
     list.hidden = false;
     list.onclick = ev => {
       const i = ev.target.dataset.i;
@@ -198,31 +204,31 @@ $('#search').addEventListener('submit', async e => {
 async function loadAll(bbox, signal, buildingsBBox) {
   const [w, s0, e, n] = bbox;
   const [wKm, hKm] = bboxSpanKm(bbox);
-  logAdd(`область загрузки: ${nf(wKm, 1)} × ${nf(hKm, 1)} км (${s0.toFixed(4)},${w.toFixed(4)} — ${n.toFixed(4)},${e.toFixed(4)})`);
+  logAdd(_('область загрузки: {w} × {h} км ({box})', { w: nf(wKm, 1), h: nf(hKm, 1), box: `${s0.toFixed(4)},${w.toFixed(4)} — ${n.toFixed(4)},${e.toFixed(4)}` }));
   const hit0 = cacheStats.hits;
-  const prog = label => (d, t) => setStatus(`${label}: ${d} из ${t} фрагментов…`, true);
+  const prog = label => (d, t) => setStatus(_('{label}: {d} из {t} фрагментов…', { label, d, t }), true);
   const step = async (label, fn, describe) => {
     const t = performance.now();
     const r = await fn();
-    logAdd(`${label}: ${describe(r)} (${((performance.now() - t) / 1000).toFixed(1)} с)`);
+    logAdd(`${label}: ${describe(r)} (${((performance.now() - t) / 1000).toFixed(1)} ${_('с')})`);
     return r;
   };
-  const ways = await step('пешеходная сеть (Overpass)', () => loadNetwork(bbox, { signal, onProgress: prog('Пешеходная сеть') }), r => `${r.length} путей`);
-  const nodeTags = await step('светофоры, переходы, калитки', () => loadNodeTags(bbox, { signal, onProgress: prog('Светофоры и переходы') }), r => `${r.size} узлов с тегами`);
-  const pois = await step('объекты: больницы, школы, парки…', () => loadPois(bbox, { signal, onProgress: prog('Школы, больницы, парки') }), r => `${r.length} объектов`);
-  const buildings = buildingsBBox ? await step('здания', () => loadBuildings(buildingsBBox, { signal, onProgress: prog('Здания') }), r => `${r.length} зданий`) : null;
-  logAdd(`фрагментов из локального кэша: ${cacheStats.hits - hit0}`);
+  const ways = await step(_('пешеходная сеть (Overpass)'), () => loadNetwork(bbox, { signal, onProgress: prog(_('Пешеходная сеть')) }), r => _('{n} путей', { n: r.length }));
+  const nodeTags = await step(_('светофоры, переходы, калитки'), () => loadNodeTags(bbox, { signal, onProgress: prog(_('Светофоры и переходы')) }), r => _('{n} узлов с тегами', { n: r.size }));
+  const pois = await step(_('объекты: больницы, школы, парки…'), () => loadPois(bbox, { signal, onProgress: prog(_('Школы, больницы, парки')) }), r => _('{n} объектов', { n: r.length }));
+  const buildings = buildingsBBox ? await step(_('здания'), () => loadBuildings(buildingsBBox, { signal, onProgress: prog(_('Здания')) }), r => _('{n} зданий', { n: r.length })) : null;
+  logAdd(_('фрагментов из локального кэша: {n}', { n: cacheStats.hits - hit0 }));
   return { ways, nodeTags, pois, buildings };
 }
 
 function getGraph(ways, nodeTags) {
   const sig = `${ways.length}:${ways[0]?.id}:${ways[ways.length - 1]?.id}:${nodeTags.size}`;
-  if (state.graph?.sig === sig) { logAdd('граф: использован построенный ранее'); return state.graph.g; }
+  if (state.graph?.sig === sig) { logAdd(_('граф: использован построенный ранее')); return state.graph.g; }
   const t = performance.now();
   const g = buildGraph(ways, { ...CONFIG.graph, nodeTags });
   state.graph = { sig, g };
   logGraph(g, nodeTags);
-  logAdd(`граф построен за ${((performance.now() - t) / 1000).toFixed(1)} с`);
+  logAdd(_('граф построен за {s} с', { s: ((performance.now() - t) / 1000).toFixed(1) }));
   return g;
 }
 
@@ -237,25 +243,25 @@ async function runIsochrone(latlng, { fit = true } = {}) {
   state.origin = { lat: latlng.lat, lng: latlng.lng };
   state.route = null; routeGroup.clearLayers(); $('#route-box').innerHTML = '';
   placeOrigin(latlng);
-  logStart(`изохроны из точки ${latlng.lat.toFixed(5)}, ${latlng.lng.toFixed(5)}; пороги ${bands.join('/')} мин`);
+  logStart(_('изохроны из точки {p}; пороги {b} мин', { p: `${latlng.lat.toFixed(5)}, ${latlng.lng.toFixed(5)}`, b: bands.join('/') }));
   try {
-    setStatus('Загружаю данные OpenStreetMap…', true);
+    setStatus(_('Загружаю данные OpenStreetMap…'), true);
     const { ways, nodeTags, pois } = await loadAll(bbox, signal);
-    if (!ways.length) throw new Error('В этой области нет данных о дорогах и тропинках.');
-    setStatus('Строю граф и считаю изохроны…', true);
+    if (!ways.length) throw new Error(_('В этой области нет данных о дорогах и тропинках.'));
+    setStatus(_('Строю граф и считаю изохроны…'), true);
     await tick();
     const g = getGraph(ways, nodeTags);
     const prepared = prepareCategories(g, pois, CATEGORIES.map(c => c.id));
     const tIso = performance.now();
     const report = isochroneReport(g, { lat: latlng.lat, lon: latlng.lng }, prepared, { bands, speedMps: speedMps() });
-    if (report) logAdd(`расчёт Дейкстры и контуров: ${((performance.now() - tIso) / 1000).toFixed(2)} с; старт привязан к сети на ${Math.round(report.snapM)} м`);
-    if (!report) throw new Error(`Рядом с точкой нет пешеходной сети (ближе ${CONFIG.snap.originM} м). Выберите точку у улицы.`);
+    if (report) logAdd(_('расчёт Дейкстры и контуров: {s} с; старт привязан к сети на {m} м', { s: ((performance.now() - tIso) / 1000).toFixed(2), m: Math.round(report.snapM) }));
+    if (!report) throw new Error(_('Рядом с точкой нет пешеходной сети (ближе {m} м). Выберите точку у улицы.', { m: CONFIG.snap.originM }));
     state.iso = { report, bands, g };
     renderIso();
     writeHash();
     const biggest = [...report.isochrones].reverse().find(i => i.geometry);
     if (fit && biggest) map.fitBounds(L.geoJSON(biggest.geometry).getBounds(), { padding: [40, 40], maxZoom: 16 });
-    setStatus(`Готово: ${nf(g.lengthKm, 0)} км дорожек и улиц в расчёте.`);
+    setStatus(_('Готово: {km} км дорожек и улиц в расчёте.', { km: nf(g.lengthKm, 0) }));
   } catch (e) { fail(e); }
 }
 
@@ -286,7 +292,7 @@ function renderIso() {
     const idx = isos.length - 1 - k;
     const color = BAND_COLORS[idx];
     L.geoJSON(iso.geometry, { pane: 'iso', style: { color, weight: 1.5, fillColor: color, fillOpacity: 0.28 } })
-      .bindTooltip(`${iso.min} мин · ${nf(iso.areaKm2, 2)} км²`, { sticky: true })
+      .bindTooltip(`${iso.min} ${_('мин')} · ${nf(iso.areaKm2, 2)} ${_('км²')}`, { sticky: true })
       .addTo(isoGroup);
   });
 
@@ -297,35 +303,35 @@ function renderIso() {
     for (const r of report.cats[id].reached) {
       const [lat, lon] = poiCenter(r.poi);
       L.circleMarker([lat, lon], { pane: 'poi', radius: 6, color: '#fff', weight: 1.5, fillColor: cat.color, fillOpacity: 1 })
-        .bindTooltip(`${esc(r.poi.name || cat.label)}<br>${nf(r.minutes, 1)} мин пешком`)
+        .bindTooltip(`${esc(r.poi.name || catLabel(cat))}<br>${nf(r.minutes, 1)} ${_('мин пешком')}`)
         .addTo(isoGroup);
     }
   }
 
-  const chips = isos.map((iso, i) => `<span class="chip"><i class="sw" style="background:${BAND_COLORS[i]}"></i>${iso.min} мин · ${nf(iso.areaKm2, 2)} км²</span>`).join('');
+  const chips = isos.map((iso, i) => `<span class="chip"><i class="sw" style="background:${BAND_COLORS[i]}"></i>${iso.min} ${_('мин')} · ${nf(iso.areaKm2, 2)} ${_('км²')}</span>`).join('');
   const rows = cats.map(id => {
     const c = report.cats[id], cat = CAT_BY_ID[id];
     const counts = bands.map(b => `<td>${c.counts[b] ? `<b>${c.counts[b]}</b>` : '<span class="muted">0</span>'}</td>`).join('');
-    const nearest = c.nearest != null ? `${fmtMin(c.nearest)} мин` : `<span class="muted">&gt; ${maxMin} мин</span>`;
-    return `<tr><td><span class="dot" style="background:${cat.color}"></span> ${esc(cat.label)}</td>${counts}<td>${nearest}</td></tr>`;
+    const nearest = c.nearest != null ? `${fmtMin(c.nearest)} ${_('мин')}` : `<span class="muted">&gt; ${maxMin} ${_('мин')}</span>`;
+    return `<tr><td><span class="dot" style="background:${cat.color}"></span> ${esc(catLabel(cat))}</td>${counts}<td>${nearest}</td></tr>`;
   }).join('');
   const details = cats.map(id => {
     const c = report.cats[id], cat = CAT_BY_ID[id];
     if (!c.reached.length) return '';
     const items = c.reached.slice(0, 8).map((r, i) => {
       const [lat, lon] = poiCenter(r.poi);
-      return `<li><button type="button" data-lat="${lat}" data-lon="${lon}">${esc(r.poi.name || 'Без названия')} — ${fmtMin(r.minutes)} мин</button>
-        <button type="button" class="ghost mini" data-route="${id}:${i}" title="Показать маршрут и разбор времени">маршрут</button>
-        <button type="button" class="ghost mini" data-from="${lat},${lon}" title="Изохроны из этого объекта (зона охвата)">зона охвата</button></li>`;
+      return `<li><button type="button" data-lat="${lat}" data-lon="${lon}">${esc(r.poi.name || _('Без названия'))} — ${fmtMin(r.minutes)} ${_('мин')}</button>
+        <button type="button" class="ghost mini" data-route="${id}:${i}" title="${_('Показать маршрут и разбор времени')}">${_('маршрут')}</button>
+        <button type="button" class="ghost mini" data-from="${lat},${lon}" title="${_('Изохроны из этого объекта (зона охвата)')}">${_('зона охвата')}</button></li>`;
     }).join('');
-    return `<details><summary>${esc(cat.label)}: ${c.reached.length}</summary><ul class="poi-list">${items}</ul></details>`;
+    return `<details><summary>${esc(catLabel(cat))}: ${c.reached.length}</summary><ul class="poi-list">${items}</ul></details>`;
   }).join('');
 
   $('#iso-result').innerHTML = `
     <div class="chips">${chips}</div>
-    <div class="tbl-wrap"><table><thead><tr><th>Объектов в зоне</th>${bands.map(b => `<th>≤ ${b} мин</th>`).join('')}<th>Ближайший</th></tr></thead><tbody>${rows || '<tr><td colspan="9" class="muted">Выберите категории выше</td></tr>'}</tbody></table></div>
+    <div class="tbl-wrap"><table><thead><tr><th>${_('Объектов в зоне')}</th>${bands.map(b => `<th>≤ ${b} ${_('мин')}</th>`).join('')}<th>${_('Ближайший')}</th></tr></thead><tbody>${rows || `<tr><td colspan="9" class="muted">${_('Выберите категории выше')}</td></tr>`}</tbody></table></div>
     ${details}
-    <p class="hint">Старт привязан к ближайшей улице (${Math.round(report.snapM)} м). Скорость ${nf(state.speedKmh, 1)} км/ч, лестницы, покрытие и ожидание на переходах учтены.</p>`;
+    <p class="hint">${_('Старт привязан к ближайшей улице ({m} м). Скорость {v} км/ч, лестницы, покрытие и ожидание на переходах учтены.', { m: Math.round(report.snapM), v: nf(state.speedKmh, 1) })}</p>`;
   $('#iso-actions').hidden = false;
   renderIsoLegend();
 }
@@ -345,7 +351,8 @@ const EVENT_LABEL = {
   signal: ['светофор', '#c0392b'], zebra: ['«зебра»', '#e67e22'], marked: ['размеченный переход', '#d4a017'],
   unmarked: ['переход без регулирования', '#8e44ad'], gate: ['калитка / шлагбаум', '#7f8c8d'], midblock: ['переход посреди квартала', '#16a085'],
 };
-const fmtSec = x => (x >= 90 ? `${nf(x / 60, 1)} мин` : `${Math.round(x)} с`);
+const evLabel = k => _(EVENT_LABEL[k][0]);
+const fmtSec = x => (x >= 90 ? `${nf(x / 60, 1)} ${_('мин')}` : `${Math.round(x)} ${_('с')}`);
 
 function showRoute(key) {
   const st = state.iso;
@@ -355,35 +362,35 @@ function showRoute(key) {
   if (!reached) return;
   const rt = routeToPoi(st.g, st.report, reached, speedMps());
   routeGroup.clearLayers();
-  if (!rt) { $('#route-box').innerHTML = '<p class="hint">Маршрут восстановить не удалось.</p>'; return; }
+  if (!rt) { $('#route-box').innerHTML = `<p class="hint">${_('Маршрут восстановить не удалось.')}</p>`; return; }
   const line = L.polyline(rt.coords, { color: '#0b0b0b', weight: 4, opacity: 0.85 }).addTo(routeGroup);
   for (const ev of rt.events) {
-    const [label, color] = EVENT_LABEL[ev.kind];
+    const label = evLabel(ev.kind), color = EVENT_LABEL[ev.kind][1];
     L.marker([ev.lat, ev.lon], { icon: L.divIcon({ className: '', html: `<div class="ev-pin" style="background:${color}"></div>`, iconSize: [16, 16], iconAnchor: [8, 8] }) })
-      .bindTooltip(`${label}: ожидание ${fmtSec(ev.sec)}`).addTo(routeGroup);
+      .bindTooltip(_('{label}: ожидание {t}', { label, t: fmtSec(ev.sec) })).addTo(routeGroup);
   }
   map.fitBounds(line.getBounds(), { padding: [50, 50], maxZoom: 17 });
   const tot = rt.totalSec;
-  const parts = [['ходьба по сети', rt.walkSec, '#2a78d6'], ['ожидание на переходах', rt.waitSec, '#c0392b'], ['подход к сети', rt.startSec + rt.endSec, '#9aa0a6']];
+  const parts = [[_('ходьба по сети'), rt.walkSec, '#2a78d6'], [_('ожидание на переходах'), rt.waitSec, '#c0392b'], [_('подход к сети'), rt.startSec + rt.endSec, '#9aa0a6']];
   const bar = parts.map(([, v, c]) => `<i style="width:${(v / tot) * 100}%;background:${c}" title="${fmtSec(v)}"></i>`).join('');
   const legend = parts.map(([l, v, c]) => `<span class="chip"><i class="sw" style="background:${c}"></i>${l}: ${fmtSec(v)}</span>`).join('');
   const byKind = {};
   for (const ev of rt.events) { const k = byKind[ev.kind] ||= { n: 0, s: 0 }; k.n++; k.s += ev.sec; }
-  const evList = Object.entries(byKind).map(([k, v]) => `<li>${EVENT_LABEL[k][0]}: ${v.n} × → ${fmtSec(v.s)}</li>`).join('');
+  const evList = Object.entries(byKind).map(([k, v]) => `<li>${evLabel(k)}: ${v.n} × → ${fmtSec(v.s)}</li>`).join('');
   $('#route-box').innerHTML = `<div class="route">
-    <h4><span>${esc(reached.poi.name || CAT_BY_ID[id].label)}</span><span>${nf(tot / 60, 1)} мин · ${nf(rt.lengthM, 0)} м</span></h4>
+    <h4><span>${esc(reached.poi.name || catLabel(CAT_BY_ID[id]))}</span><span>${nf(tot / 60, 1)} ${_('мин')} · ${nf(rt.lengthM, 0)} ${_('м')}</span></h4>
     <div class="bar">${bar}</div><div class="chips">${legend}</div>
-    ${evList ? `<ul>${evList}</ul>` : '<p class="hint">На маршруте нет значимых ожиданий.</p>'}
-    <p class="hint">Средняя скорость с учётом ожиданий: ${nf((rt.lengthM / tot) * 3.6, 1)} км/ч при расчётной ${nf(state.speedKmh, 1)}.</p>
+    ${evList ? `<ul>${evList}</ul>` : `<p class="hint">${_('На маршруте нет значимых ожиданий.')}</p>`}
+    <p class="hint">${_('Средняя скорость с учётом ожиданий: {a} км/ч при расчётной {b}.', { a: nf((rt.lengthM / tot) * 3.6, 1), b: nf(state.speedKmh, 1) })}</p>
   </div>`;
-  logAdd(`маршрут до «${reached.poi.name || CAT_BY_ID[id].label}»: ${nf(rt.lengthM, 0)} м, ходьба ${fmtSec(rt.walkSec)}, ожидания ${fmtSec(rt.waitSec)} (${rt.events.length} событий)`);
+  logAdd(_('маршрут до «{name}»: {len} м, ходьба {w}, ожидания {t} ({n} событий)', { name: reached.poi.name || catLabel(CAT_BY_ID[id]), len: nf(rt.lengthM, 0), w: fmtSec(rt.walkSec), t: fmtSec(rt.waitSec), n: rt.events.length }));
 }
 $('#iso-clear').addEventListener('click', () => {
   state.iso = null; state.origin = null; state.route = null;
   routeGroup.clearLayers(); $('#route-box').innerHTML = '';
   if (originMarker) { map.removeLayer(originMarker); originMarker = null; }
   renderIso();
-  setStatus('Готово к работе.');
+  setStatus(_('Готово к работе.'));
 });
 $('#iso-export').addEventListener('click', () => {
   if (state.iso) download('isochrones.geojson', JSON.stringify(isochronesToGeoJSON(state.iso.report)), 'application/geo+json');
@@ -394,8 +401,8 @@ function renderIsoLegend() {
   if (state.tab !== 'iso') return;
   if (!state.iso) { el.hidden = true; return; }
   el.hidden = false;
-  el.innerHTML = '<b>Время пешком</b>' + state.iso.report.isochrones
-    .map((iso, i) => `<div class="lrow"><i class="sw" style="background:${BAND_COLORS[i]}"></i>до ${iso.min} мин</div>`).join('');
+  el.innerHTML = `<b>${_('Время пешком')}</b>` + state.iso.report.isochrones
+    .map((iso, i) => `<div class="lrow"><i class="sw" style="background:${BAND_COLORS[i]}"></i>${_('до')} ${iso.min} ${_('мин')}</div>`).join('');
 }
 
 // ── анализ города ───────────────────────────────────────────────────────────
@@ -415,18 +422,18 @@ function analysisBBox() {
 }
 
 async function pickDistricts(bbox, mode, signal) {
-  if (mode.startsWith('grid')) return { groups: makeGridGroups(bbox, Number(mode.slice(4))), note: 'квадраты' };
+  if (mode.startsWith('grid')) return { groups: makeGridGroups(bbox, Number(mode.slice(4))), note: _('квадраты') };
   let level = Number(mode);
   if (mode === 'auto') {
-    setStatus('Ищу административные границы…', true);
+    setStatus(_('Ищу административные границы…'), true);
     const levels = await listAdminLevels(bbox, { signal });
     const ok = levels.find(l => l.count >= 3 && l.count <= 80);
-    if (!ok) return { groups: makeGridGroups(bbox, 1000), note: 'квадраты 1 км (границы районов не найдены)' };
+    if (!ok) return { groups: makeGridGroups(bbox, 1000), note: _('квадраты 1 км (границы районов не найдены)') };
     level = ok.level;
   }
-  setStatus(`Загружаю границы районов (admin_level=${level})…`, true);
+  setStatus(_('Загружаю границы районов (admin_level={l})…', { l: level }), true);
   const areas = await loadAdminAreas(bbox, level, { signal });
-  if (areas.length < 2) return { groups: makeGridGroups(bbox, 1000), note: 'квадраты 1 км (в этой области нет районов нужного уровня)' };
+  if (areas.length < 2) return { groups: makeGridGroups(bbox, 1000), note: _('квадраты 1 км (в этой области нет районов нужного уровня)') };
   const [w, s, e, n] = bbox;
   const groups = areas.map(a => {
     const box = geometryBBox(a.geometry);
@@ -442,28 +449,28 @@ async function runAnalysis() {
   const btn = $('#run-area');
   btn.disabled = true;
   try {
-    logStart('анализ видимой области');
+    logStart(_('анализ видимой области'));
     const { bbox, clipped } = analysisBBox();
     areaRect.setBounds([[bbox[1], bbox[0]], [bbox[3], bbox[2]]]).addTo(map);
     const padM = CONFIG.index.worstMin * 60 * speedMps();
     const big = expandBBox(bbox, padM);
     const weightMode = $('#weight-mode').value;
     const { ways, nodeTags, pois, buildings } = await loadAll(big, signal, weightMode === 'buildings' ? bbox : null);
-    if (!ways.length) throw new Error('В этой области нет данных о дорогах и тропинках.');
-    setStatus('Строю граф пешеходной сети…', true);
+    if (!ways.length) throw new Error(_('В этой области нет данных о дорогах и тропинках.'));
+    setStatus(_('Строю граф пешеходной сети…'), true);
     await tick();
     const g = getGraph(ways, nodeTags);
     const prepared = prepareCategories(g, pois, CATEGORIES.map(c => c.id));
-    logAdd('объекты привязаны к графу: ' + CATEGORIES.map(c => `${c.label.split(' ')[0]} ${prepared[c.id].items.length}`).join(', '));
-    setStatus('Привязываю здания к сети…', true);
+    logAdd(_('объекты привязаны к графу: ') + CATEGORIES.map(c => `${catShort(c)} ${prepared[c.id].items.length}`).join(', '));
+    setStatus(_('Привязываю здания к сети…'), true);
     await tick();
     let demand = buildDemand(g, { buildings, mode: weightMode, bbox });
     let usedMode = weightMode;
     if (!demand.n && weightMode === 'buildings') { demand = buildDemand(g, { mode: 'network', bbox }); usedMode = 'network'; }
-    if (!demand.n) throw new Error('В выбранной области нет пешеходной сети.');
-    logAdd(`точек спроса: ${demand.n} (${usedMode === 'buildings' ? 'здания' : 'узлы сети'})`);
+    if (!demand.n) throw new Error(_('В выбранной области нет пешеходной сети.'));
+    logAdd(_('точек спроса: {n} ({k})', { n: demand.n, k: usedMode === 'buildings' ? _('здания') : _('узлы сети') }));
     const { groups, note } = await pickDistricts(bbox, $('#district-mode').value, signal);
-    logAdd(`районы: ${groups.length} (${note})`);
+    logAdd(_('районы: {n} ({note})', { n: groups.length, note }));
     state.area = { ctx: { g, prepared, demand, groups, bbox, pois, note, clipped, usedMode }, result: null };
     recomputeArea();
     setTab('area');
@@ -474,16 +481,16 @@ function recomputeArea() {
   const a = state.area;
   if (!a) return;
   const catIds = activeCatIds();
-  if (!catIds.length) { setStatus('Выберите хотя бы одну категорию.', false, true); return; }
-  setStatus('Считаю доступность…', true);
+  if (!catIds.length) { setStatus(_('Выберите хотя бы одну категорию.'), false, true); return; }
+  setStatus(_('Считаю доступность…'), true);
   const { g, prepared, demand, groups, bbox } = a.ctx;
   const tA = performance.now();
   a.result = computeAnalysis({ g, prepared, demand, groups, catIds, bands: parseBands(), speedMps: speedMps(), bbox });
-  logAdd(`расчёт доступности: ${((performance.now() - tA) / 1000).toFixed(1)} с; ячеек ${a.result.cells.length}, проблемных зон ${a.result.zones.length}`);
+  logAdd(_('расчёт доступности: {s} с; ячеек {c}, проблемных зон {z}', { s: ((performance.now() - tA) / 1000).toFixed(1), c: a.result.cells.length, z: a.result.zones.length }));
   renderArea();
   writeHash();
   const c = a.ctx;
-  setStatus(`Готово. Районы: ${c.note}.${c.clipped ? ` Область урезана до ${CONFIG.maxAnalysisSpanKm} км — сдвиньте карту для другого участка.` : ''}`);
+  setStatus(_('Готово. Районы: {note}.', { note: c.note }) + (c.clipped ? ' ' + _('Область урезана до {km} км — сдвиньте карту для другого участка.', { km: CONFIG.maxAnalysisSpanKm }) : ''));
 }
 
 function renderArea() {
@@ -493,29 +500,29 @@ function renderArea() {
 
   const bars = result.catIds.map(id => {
     const v = tot.stats[id].shares[maxBand];
-    return `<div class="sharebar"><span><i class="dot" style="background:${CAT_BY_ID[id].color}"></i> ${esc(CAT_BY_ID[id].label)}</span><div class="track"><i style="width:${v}%"></i></div><output>${nf(v, 0)}%</output></div>`;
+    return `<div class="sharebar"><span><i class="dot" style="background:${CAT_BY_ID[id].color}"></i> ${esc(catLabel(CAT_BY_ID[id]))}</span><div class="track"><i style="width:${v}%"></i></div><output>${nf(v, 0)}%</output></div>`;
   }).join('');
 
   const zones = result.zones.slice(0, 12).map(z => `
     <li><button type="button" data-zone="${z.id}"><span class="badge">${z.id}</span>
-      <span>индекс ${nf(z.index, 0)} · ${nf(z.weight / tot.weight * 100, 1)}% спроса · ${nf(z.areaKm2, 2)} км²<br><span class="muted">хуже всего: ${esc(CAT_BY_ID[z.worst].label.toLowerCase())}</span></span></button></li>`).join('');
+      <span>${_('индекс')} ${nf(z.index, 0)} · ${nf(z.weight / tot.weight * 100, 1)}% ${_('спроса')} · ${nf(z.areaKm2, 2)} ${_('км²')}<br><span class="muted">${_('хуже всего:')} ${esc(catLabel(CAT_BY_ID[z.worst]).toLowerCase())}</span></span></button></li>`).join('');
 
   $('#area-result').innerHTML = `
     <div class="tiles">
-      <div class="tile"><b>${tot.index == null ? '—' : nf(tot.index, 0)}</b><span>индекс доступности, 0–100</span></div>
-      <div class="tile"><b>${result.zones.length}</b><span>проблемных зон</span></div>
-      <div class="tile"><b>${nf(result.demand.n, 0)}</b><span>${ctx.usedMode === 'buildings' ? 'зданий в расчёте' : 'узлов сети в расчёте'}</span></div>
+      <div class="tile"><b>${tot.index == null ? '—' : nf(tot.index, 0)}</b><span>${_('индекс доступности, 0–100')}</span></div>
+      <div class="tile"><b>${result.zones.length}</b><span>${_('проблемных зон')}</span></div>
+      <div class="tile"><b>${nf(result.demand.n, 0)}</b><span>${ctx.usedMode === 'buildings' ? _('зданий в расчёте') : _('узлов сети в расчёте')}</span></div>
     </div>
-    <div class="h3">Доля жителей в пределах ${maxBand} мин пешком</div>
+    <div class="h3">${_('Доля жителей в пределах {b} мин пешком', { b: maxBand })}</div>
     <div class="sharebars">${bars}</div>
-    <div class="h3">Проблемные зоны</div>
-    ${zones ? `<ul class="zones">${zones}</ul>` : '<p class="hint">Зон с индексом ниже ' + CONFIG.index.problemBelow + ' не найдено.</p>'}
-    <div class="h3">Сравнение районов
-      <select id="metric" aria-label="Показатель"><option value="share" ${state.metric === 'share' ? 'selected' : ''}>Доля ≤ ${maxBand} мин, %</option><option value="median" ${state.metric === 'median' ? 'selected' : ''}>Медиана, мин</option></select>
+    <div class="h3">${_('Проблемные зоны')}</div>
+    ${zones ? `<ul class="zones">${zones}</ul>` : `<p class="hint">${_('Зон с индексом ниже {n} не найдено.', { n: CONFIG.index.problemBelow })}</p>`}
+    <div class="h3">${_('Сравнение районов')}
+      <select id="metric" aria-label="${_('Показатель')}"><option value="share" ${state.metric === 'share' ? 'selected' : ''}>${_('Доля ≤ {b} мин, %', { b: maxBand })}</option><option value="median" ${state.metric === 'median' ? 'selected' : ''}>${_('Медиана, мин')}</option></select>
     </div>
     <div class="tbl-wrap" id="dist-table"></div>
-    <p class="hint">Индекс: 100 баллов при ≤ ${CONFIG.index.bestMin} мин до объекта, 0 при ≥ ${CONFIG.index.worstMin} мин, между ними линейно; среднее по выбранным категориям, взвешено по ${ctx.usedMode === 'buildings' ? 'этажности зданий' : 'длине улиц'}. Это прокси, а не перепись населения.</p>
-    <div class="actions"><button id="area-csv" class="ghost">Скачать CSV</button><button id="area-geojson" class="ghost">Скачать GeoJSON</button></div>`;
+    <p class="hint">${_('Индекс: 100 баллов при ≤ {best} мин до объекта, 0 при ≥ {worst} мин, между ними линейно; среднее по выбранным категориям, взвешено по {w}. Это прокси, а не перепись населения.', { best: CONFIG.index.bestMin, worst: CONFIG.index.worstMin, w: ctx.usedMode === 'buildings' ? _('этажности зданий') : _('длине улиц') })}</p>
+    <div class="actions"><button id="area-csv" class="ghost">${_('Скачать CSV')}</button><button id="area-geojson" class="ghost">${_('Скачать GeoJSON')}</button></div>`;
   renderDistrictTable();
   buildAreaLayers();
   if (state.tab === 'area') attachAreaLayers();
@@ -541,12 +548,12 @@ function renderDistrictTable() {
     const cells = result.catIds.map(id => {
       const s = d.stats[id];
       const txt = state.metric === 'share' ? `${nf(s.shares[maxBand], 0)}%` : (Number.isFinite(s.median) ? nf(s.median, 1) : `&gt;${CONFIG.fieldMaxMin}`);
-      return `<td title="медиана ${fmtMin(s.median)} мин; ${result.bands.map(b => `≤${b}: ${nf(s.shares[b], 0)}%`).join(', ')}">${txt}</td>`;
+      return `<td title="${_('медиана')} ${fmtMin(s.median)} ${_('мин')}; ${result.bands.map(b => `≤${b}: ${nf(s.shares[b], 0)}%`).join(', ')}">${txt}</td>`;
     }).join('');
-    const warn = d.coverage < 0.95 ? ` <span class="warn" title="Район виден лишь на ${nf(d.coverage * 100, 0)}%: показатели посчитаны по видимой части">⚠</span>` : '';
+    const warn = d.coverage < 0.95 ? ` <span class="warn" title="${_('Район виден лишь на {p}%: показатели посчитаны по видимой части', { p: nf(d.coverage * 100, 0) })}">⚠</span>` : '';
     return `<tr class="click" data-id="${esc(d.id)}"><td>${esc(d.name)}${warn}</td><td class="num-bar"><i style="width:${d.index}%"></i>${nf(d.index, 0)}</td>${cells}</tr>`;
   }).join('');
-  $('#dist-table').innerHTML = `<table><thead><tr>${head('name', 'Район')}${head('index', 'Индекс')}${result.catIds.map(id => head(id, esc(CAT_BY_ID[id].label.split(' ')[0]))).join('')}</tr></thead><tbody>${body}</tbody></table>`;
+  $('#dist-table').innerHTML = `<table><thead><tr>${head('name', _('Район'))}${head('index', _('Индекс'))}${result.catIds.map(id => head(id, esc(catShort(CAT_BY_ID[id])))).join('')}</tr></thead><tbody>${body}</tbody></table>`;
 }
 
 $('#area-result').addEventListener('click', e => {
@@ -591,17 +598,17 @@ function buildAreaLayers() {
 
   for (const c of result.cells) {
     L.polygon(c.ring.map(([lo, la]) => [la, lo]), { pane: 'cells', stroke: false, fillColor: indexColor(c.index), fillOpacity: 0.62 })
-      .bindTooltip(`Индекс ${nf(c.index, 0)} · хуже всего: ${esc(CAT_BY_ID[c.worst].label.toLowerCase())}`, { sticky: true })
+      .bindTooltip(`${_('Индекс')} ${nf(c.index, 0)} · ${_('хуже всего:')} ${esc(catLabel(CAT_BY_ID[c.worst]).toLowerCase())}`, { sticky: true })
       .addTo(areaLayers.cells);
   }
   for (const d of result.districts) {
     L.geoJSON(d.geometry, { pane: 'districts', style: { color: '#52514e', weight: 1.6, fill: false } })
-      .bindTooltip(`${esc(d.name)}${d.index == null ? '' : ` · индекс ${nf(d.index, 0)}`}`, { sticky: true })
+      .bindTooltip(`${esc(d.name)}${d.index == null ? '' : ` · ${_('индекс')} ${nf(d.index, 0)}`}`, { sticky: true })
       .addTo(areaLayers.districts);
   }
   for (const z of result.zones) {
     L.geoJSON(z.outline, { pane: 'zones', style: { color: PROBLEM_COLOR, weight: 2.5, fillColor: PROBLEM_COLOR, fillOpacity: 0.08 } })
-      .bindTooltip(`Зона ${z.id}: индекс ${nf(z.index, 0)}, хуже всего — ${esc(CAT_BY_ID[z.worst].label.toLowerCase())}`, { sticky: true })
+      .bindTooltip(_('Зона {id}: индекс {i}, хуже всего — {w}', { id: z.id, i: nf(z.index, 0), w: esc(catLabel(CAT_BY_ID[z.worst]).toLowerCase()) }), { sticky: true })
       .addTo(areaLayers.zones);
     if (z.id <= 15) {
       L.marker(z.center, { pane: 'poi', interactive: false, icon: L.divIcon({ className: '', html: `<div class="zone-num">${z.id}</div>`, iconSize: [22, 22], iconAnchor: [11, 11] }) })
@@ -615,7 +622,7 @@ function buildAreaLayers() {
     shown++;
     const [lat, lon] = poiCenter(p);
     L.circleMarker([lat, lon], { pane: 'poi', radius: 3.5, color: '#fff', weight: 1, fillColor: CAT_BY_ID[p.cat].color, fillOpacity: 1 })
-      .bindTooltip(esc(p.name || CAT_BY_ID[p.cat].label)).addTo(areaLayers.poi);
+      .bindTooltip(esc(p.name || catLabel(CAT_BY_ID[p.cat]))).addTo(areaLayers.poi);
   }
 
 }
@@ -633,7 +640,7 @@ function buildLayerToggles() {
   const el = $('#layers');
   if (el.dataset.built) return;
   el.dataset.built = '1';
-  const defs = [['cells', 'Индекс по ячейкам 150 м', true], ['districts', 'Границы районов', true], ['zones', 'Проблемные зоны', true], ['poi', 'Объекты', true]];
+  const defs = [['cells', _('Индекс по ячейкам 150 м'), true], ['districts', _('Границы районов'), true], ['zones', _('Проблемные зоны'), true], ['poi', _('Объекты'), true]];
   el.innerHTML = defs.map(([k, label, on]) => `<label><input type="checkbox" data-layer="${k}" ${on ? 'checked' : ''}>${label}</label>`).join('');
   el.addEventListener('change', e => {
     const k = e.target.dataset.layer;
@@ -645,10 +652,10 @@ function buildLayerToggles() {
 function renderAreaLegend() {
   const el = $('#legend');
   if (state.tab !== 'area' || !state.area) return;
-  el.innerHTML = `<b>Индекс доступности</b>
+  el.innerHTML = `<b>${_('Индекс доступности')}</b>
     <div class="scale">${INDEX_STEPS.map(([, c]) => `<i style="background:${c}"></i>`).join('')}</div>
-    <div class="ends"><span>0 · плохо</span><span>100 · хорошо</span></div>
-    <div class="lrow" style="margin-top:6px"><i class="sw" style="border:2.5px solid ${PROBLEM_COLOR};background:none"></i>проблемная зона (&lt; ${CONFIG.index.problemBelow})</div>`;
+    <div class="ends"><span>${_('0 · плохо')}</span><span>${_('100 · хорошо')}</span></div>
+    <div class="lrow" style="margin-top:6px"><i class="sw" style="border:2.5px solid ${PROBLEM_COLOR};background:none"></i>${_('проблемная зона')} (&lt; ${CONFIG.index.problemBelow})</div>`;
   el.hidden = false;
 }
 
@@ -673,11 +680,11 @@ function calcFrom(latlng, zoom = 15) {
 }
 $('#from-center').addEventListener('click', () => calcFrom(map.getCenter(), 14));
 $('#from-geo').addEventListener('click', () => {
-  if (!navigator.geolocation) return setStatus('Геолокация недоступна в этом браузере.', false, true);
-  setStatus('Определяю местоположение…', true);
+  if (!navigator.geolocation) return setStatus(_('Геолокация недоступна в этом браузере.'), false, true);
+  setStatus(_('Определяю местоположение…'), true);
   navigator.geolocation.getCurrentPosition(
     pos => calcFrom({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
-    err => setStatus(`Не удалось определить местоположение: ${err.message || 'доступ запрещён'}. Введите адрес или координаты.`, false, true),
+    err => setStatus(_('Не удалось определить местоположение: {m}. Введите адрес или координаты.', { m: err.message || _('доступ запрещён') }), false, true),
     { enableHighAccuracy: false, timeout: 10000 });
 });
 const COORD_RE = /^\s*(-?\d{1,2}(?:[.,]\d+)?)\s*[,;\s]\s*(-?\d{1,3}(?:[.,]\d+)?)\s*$/;
@@ -688,13 +695,13 @@ $('#from-text').addEventListener('submit', async e => {
   const m = COORD_RE.exec(q);
   if (m) {
     const lat = parseFloat(m[1].replace(',', '.')), lng = parseFloat(m[2].replace(',', '.'));
-    if (Math.abs(lat) > 90 || Math.abs(lng) > 180) return setStatus('Координаты вне допустимого диапазона.', false, true);
+    if (Math.abs(lat) > 90 || Math.abs(lng) > 180) return setStatus(_('Координаты вне допустимого диапазона.'), false, true);
     return calcFrom({ lat, lng });
   }
   try {
-    setStatus('Ищу адрес…', true);
-    const res = await geocode(q, { signal: startTask() });
-    if (!res.length) return setStatus('Адрес не найден.', false, true);
+    setStatus(_('Ищу адрес…'), true);
+    const res = await geocode(q, { signal: startTask(), lang: getLang() });
+    if (!res.length) return setStatus(_('Адрес не найден.'), false, true);
     const [w, s0, e2, n] = res[0].bbox;
     calcFrom({ lat: (s0 + n) / 2, lng: (w + e2) / 2 });
   } catch (err) { fail(err); }
@@ -705,7 +712,7 @@ $('#from-text').addEventListener('submit', async e => {
 function setSpeed(v, fromPreset) {
   state.speedKmh = v;
   $('#speed').value = v;
-  $('#speed-out').textContent = nf(v, 1) + ' км/ч';
+  $('#speed-out').textContent = nf(v, 1) + ' ' + _('км/ч');
   const opt = [...$('#preset').options].find(o => o.value !== 'custom' && Number(o.value) === v);
   $('#preset').value = opt ? opt.value : 'custom';
   if (!fromPreset) writeHash();
@@ -727,6 +734,7 @@ function currentHash() {
   q.set('s', state.speedKmh);
   q.set('b', parseBands().join(','));
   q.set('k', activeCatIds().join(','));
+  q.set('l', getLang());
   if (state.origin) q.set('o', `${state.origin.lat.toFixed(5)},${state.origin.lng.toFixed(5)}`);
   return q.toString();
 }
@@ -736,8 +744,8 @@ $('#bands').addEventListener('change', writeHash);
 $('#share').addEventListener('click', async () => {
   writeHash();
   const url = location.href;
-  try { await navigator.clipboard.writeText(url); setStatus('Ссылка на текущий расчёт скопирована.'); }
-  catch { prompt('Скопируйте ссылку:', url); }
+  try { await navigator.clipboard.writeText(url); setStatus(_('Ссылка на текущий расчёт скопирована.')); }
+  catch { prompt(_('Скопируйте ссылку:'), url); }
 });
 
 function restoreFromHash() {
@@ -764,9 +772,9 @@ async function openMethod() {
   const dlg = $('#method'), body = $('#method-body');
   const draw = async () => {
     body.innerHTML = methodHTML(state.speedKmh) + `
-      <h3>7. Локальный кэш данных</h3>
-      <p>Фрагменты OSM сохраняются в браузере (IndexedDB) на 7 дней, поэтому повторные расчёты в той же области не обращаются к сети. Сейчас сохранено фрагментов: <b id="cache-n">…</b>.</p>
-      <div class="params-actions"><button type="button" id="cache-clear">Очистить кэш</button></div>`;
+      <h3>${_('7. Локальный кэш данных')}</h3>
+      <p>${_('Фрагменты OSM сохраняются в браузере (IndexedDB) на 7 дней, поэтому повторные расчёты в той же области не обращаются к сети. Сейчас сохранено фрагментов:')} <b id="cache-n">…</b>.</p>
+      <div class="params-actions"><button type="button" id="cache-clear">${_('Очистить кэш')}</button></div>`;
     $('#cache-n').textContent = await storeCount();
   };
   await draw();
@@ -779,19 +787,30 @@ async function openMethod() {
       if (restoreDefaults()) onParamsChanged();
       draw();
     } else if (e.target.id === 'cache-clear') {
-      clearMemoryCache(); await storeClear(); draw(); setStatus('Кэш очищен.');
+      clearMemoryCache(); await storeClear(); draw(); setStatus(_('Кэш очищен.'));
     }
   };
 }
 function onParamsChanged() {
   state.graph = null; // таблицы ожиданий «запекаются» в граф — пересобираем
-  logAdd('параметры модели изменены — граф будет перестроен');
+  logAdd(_('параметры модели изменены — граф будет перестроен'));
   if (state.tab === 'iso' && state.origin) runIsochrone(state.origin, { fit: false });
   else if (state.tab === 'area' && state.area) runAnalysis();
-  setStatus('Параметры применены, пересчитываю…', true);
+  setStatus(_('Параметры применены, пересчитываю…'), true);
 }
 $('#open-method').addEventListener('click', openMethod);
 $('#method').addEventListener('click', e => { if (e.target.id === 'method') e.target.close(); }); // клик по фону
 
+setNetLogger(m => logAdd(m));
+translateDom(document.body);
+document.title = _('City Accessibility — пешая доступность города');
+$('#lang').textContent = getLang() === 'en' ? 'RU' : 'EN';
+$('#lang').addEventListener('click', () => {
+  const next = getLang() === 'en' ? 'ru' : 'en';
+  saveLang(next);
+  const q = new URLSearchParams(location.hash.slice(1)); q.set('l', next);
+  location.hash = q.toString();
+  location.reload();
+});
 restoreFromHash();
 buildCatsUI();

@@ -7,7 +7,12 @@ import { WALK, websterWait, adamsWait, unsignalizedWait, applyParams, resetParam
 import { setParams, restoreDefaults } from '../js/params.js';
 import { isochroneGeometry } from '../js/isochrone.js';
 import { prepareCategories, isochroneReport, buildDemand, computeAnalysis, makeGridGroups, scoreOf, routeToPoi, districtsToCSV, analysisToGeoJSON } from '../js/analysis.js';
-import { parsePois, buildingWeight } from '../js/overpass.js';
+import { parsePois, buildingWeight, runOverpass, geocode, parsePhoton, overpassPool } from '../js/overpass.js';
+import { EN } from '../js/lang-en.js';
+import { _, setLang } from '../js/i18n.js';
+import fs from 'node:fs';
+import { MirrorPool, withFailover } from '../js/failover.js';
+import { CONFIG, CATEGORIES } from '../js/config.js';
 import { pointInGeometry, geometryAreaM2, haversine, expandBBox } from '../js/geo.js';
 
 globalThis.osmtogeojson = osmtogeojson;
@@ -418,6 +423,168 @@ test('вес здания', () => {
 });
 test('haversine', () => {
   assert.ok(Math.abs(haversine(0, 0, 0, 1) - 111195) < 200);
+});
+
+console.log('Отказоустойчивость (зеркала Overpass и геокодеры)');
+const atest = async (name, fn) => { await fn(); passed++; console.log('  ✓', name); };
+const okRes = body => ({ ok: true, status: 200, text: async () => JSON.stringify(body), json: async () => body, headers: new Headers() });
+const badRes = (status, h = {}) => ({ ok: false, status, text: async () => '', headers: new Headers(h) });
+const noSleep = () => Promise.resolve();
+const urlsOf = CONFIG.overpass;
+
+await atest('Overpass: первое зеркало 503 → второе отвечает, первое уходит в карантин', async () => {
+  overpassPool.reset();
+  const calls = [];
+  const fetchImpl = async url => { calls.push(url); return url === urlsOf[0] ? badRes(503) : okRes({ elements: [{ type: 'node', id: 1 }] }); };
+  const r = await runOverpass('q', { fetchImpl });
+  assert.equal(r.elements.length, 1);
+  assert.deepEqual(calls, [urlsOf[0], urlsOf[1]]);
+  calls.length = 0;
+  await runOverpass('q', { fetchImpl });
+  assert.equal(calls[0], urlsOf[1], 'рабочее зеркало теперь первое, упавшее не дёргаем');
+});
+await atest('Overpass: перебираются ВСЕ зеркала, последнее рабочее выигрывает', async () => {
+  overpassPool.reset();
+  const calls = [];
+  const last = urlsOf[urlsOf.length - 1];
+  const fetchImpl = async url => { calls.push(url); if (url !== last) throw new TypeError('network down'); return okRes({ elements: [] }); };
+  await runOverpass('q', { fetchImpl });
+  assert.deepEqual(calls, urlsOf);
+});
+await atest('Overpass: некорректный ответ (HTML, remark о таймауте, нет elements) считается сбоем зеркала', async () => {
+  overpassPool.reset();
+  const seq = [
+    { ok: true, status: 200, text: async () => '<html>busy</html>', headers: new Headers() },
+    okRes({ elements: [], remark: 'runtime error: Query timed out' }),
+    okRes({ foo: 1 }),
+    okRes({ elements: [{ id: 7 }] }),
+  ];
+  let i = 0;
+  const r = await runOverpass('q', { fetchImpl: async () => seq[i++] });
+  assert.equal(r.elements[0].id, 7); assert.equal(i, 4);
+});
+await atest('Overpass: если все зеркала упали — повторные раунды, затем понятная ошибка', async () => {
+  const pool = new MirrorPool(['https://a.example/x', 'https://b.example/x']);
+  let n = 0;
+  await assert.rejects(withFailover(pool, async () => { n++; throw new Error('HTTP 504'); }, { rounds: 3, sleepFn: noSleep }),
+    e => /недоступны/.test(e.message) && e.errors.length === 6);
+  assert.equal(n, 6);
+});
+await atest('failover: восстановление во втором раунде', async () => {
+  const pool = new MirrorPool(['https://a.example/x', 'https://b.example/x']);
+  let n = 0; const events = [];
+  const r = await withFailover(pool, async () => { if (++n < 3) throw new Error('HTTP 502'); return 'ok'; }, { sleepFn: noSleep, onEvent: m => events.push(m) });
+  assert.equal(r, 'ok');
+  assert.ok(events.some(m => /повтор/.test(m)) && events.some(m => /пробую/.test(m)));
+});
+await atest('failover: таймаут зависшего зеркала → переход к следующему', async () => {
+  const pool = new MirrorPool(['https://slow.example/x', 'https://fast.example/x']);
+  const r = await withFailover(pool, (url, sig) => url.includes('slow')
+    ? new Promise((_, rej) => sig.addEventListener('abort', () => rej(new Error('aborted'))))
+    : Promise.resolve('fast'), { timeoutMs: 30, sleepFn: noSleep });
+  assert.equal(r, 'fast');
+});
+await atest('failover: отмена пользователем прерывает без перебора зеркал', async () => {
+  const pool = new MirrorPool(['https://a.example/x', 'https://b.example/x']);
+  const ctl = new AbortController(); let n = 0;
+  const p = withFailover(pool, async () => { n++; ctl.abort(); throw new Error('x'); }, { signal: ctl.signal, sleepFn: noSleep });
+  await assert.rejects(p, e => e.name === 'AbortError');
+  assert.equal(n, 1);
+});
+await atest('failover: карантин истекает, зеркало возвращается в очередь', async () => {
+  let t = 0;
+  const pool = new MirrorPool(['https://a.example/x', 'https://b.example/x'], { baseCooldownMs: 1000, now: () => t });
+  pool.failure('https://a.example/x');
+  assert.equal(pool.order()[0], 'https://b.example/x');
+  t = 1500;
+  assert.equal(pool.order().length, 2);
+  assert.ok(pool.st.get('https://a.example/x').until <= t);
+});
+await atest('геокодер: Nominatim недоступен → Photon', async () => {
+  const photon = { features: [{ geometry: { coordinates: [46.03, 51.53] }, properties: { name: 'Саратов', country: 'Россия', extent: [45.9, 51.6, 46.2, 51.4] } }] };
+  const fetchImpl = async url => (url.includes('nominatim') ? badRes(429, { 'Retry-After': '0' }) : okRes(photon));
+  const r = await geocode('Саратов', { fetchImpl });
+  assert.equal(r[0].lat, 51.53);
+  assert.deepEqual(r[0].bbox, [45.9, 51.4, 46.2, 51.6]);
+});
+test('геокодер: разбор Photon без extent даёт рамку вокруг точки', () => {
+  const r = parsePhoton({ features: [{ geometry: { coordinates: [10, 20] }, properties: { name: 'X' } }] });
+  assert.ok(r[0].bbox[0] < 10 && r[0].bbox[2] > 10);
+});
+
+console.log('Сверка расчётов');
+test('сверка: случайные сети — нижняя граница, монотонность по скорости, согласованность разбора', () => {
+  let seed = 12345;
+  const rnd = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296);
+  const classes = ['residential', 'tertiary', 'secondary', 'primary', 'footway'];
+  for (let trial = 0; trial < 6; trial++) {
+    const { ways, nid } = gridWays2(8, 100, j => ({ highway: classes[Math.floor(rnd() * classes.length)], sidewalk: 'both' }), i => ({ highway: classes[Math.floor(rnd() * classes.length)], sidewalk: 'both' }));
+    const tags = new Map();
+    for (let i = 0; i <= 8; i++) for (let j = 0; j <= 8; j++) { const r = rnd(); if (r < 0.2) tags.set(nid(i, j), { highway: 'traffic_signals' }); else if (r < 0.35) tags.set(nid(i, j), { highway: 'crossing', crossing: 'zebra' }); }
+    const gg = buildGraph(ways, { nodeTags: tags });
+    for (let k = 0; k < 8; k++) {
+      const a = [Math.floor(rnd() * 9) * 100, Math.floor(rnd() * 9) * 100], b = [Math.floor(rnd() * 9) * 100, Math.floor(rnd() * 9) * 100];
+      if (a[0] === b[0] && a[1] === b[1]) continue;
+      const src = near(gg, ...a), dst = near(gg, ...b);
+      const slow = dijkstra(gg, [{ node: src, cost0: 0 }], 1e9, 3 / 3.6, true);
+      const fast = dijkstra(gg, [{ node: src, cost0: 0 }], 1e9, 6 / 3.6, true);
+      const straight = Math.hypot(a[0] - b[0], a[1] - b[1]);
+      assert.ok(fast[dst] >= (straight / (6 / 3.6)) * 0.999, 'не быстрее прямой (допуск float32): ' + JSON.stringify({ a, b, f: fast[dst], lim: straight / (6 / 3.6) }));
+      assert.ok(fast[dst] <= slow[dst] + 1e-6, 'быстрее идёшь — меньше времени');
+      const p = tracePath(gg, slow, dst, 3 / 3.6);
+      assert.ok(p.waitSec >= 0 && p.walkSec > 0);
+      assert.ok(Math.abs(p.walkSec * (3 / 3.6) - p.lengthM * 1) < p.lengthM * 1.6 + 1, 'ходьба/путь согласованы (с множителями пути)');
+      assert.ok(Math.abs(p.startSec + p.walkSec + p.waitSec - slow[dst]) < 1e-3);
+      assert.ok(p.lengthM >= straight - 1);
+    }
+  }
+});
+test('сверка: без ожиданий (нулевые параметры) время = длина × множитель / скорость', () => {
+  const base = getParams();
+  const z = getParams();
+  z.signalCycle = z.signalCycle.map(() => 0); z.signalGreen = z.signalGreen.map(() => 0); z.roadFlow = z.roadFlow.map(() => 0); z.gateDelay = 0;
+  setParams(z);
+  const gg = buildGraph(gridWays2(10, 100, { highway: 'primary', sidewalk: 'both' }, { highway: 'primary', sidewalk: 'both' }).ways);
+  const t = T(gg, [0, 0], [700, 300]);
+  restoreDefaults();
+  assert.ok(Math.abs(t - 1000 / SPEED) < 1.5, `${t} vs ${1000 / SPEED}`);
+  assert.ok(paramsAreDefault());
+});
+test('сверка: изохрона 5 мин на открытой сетке ≈ ромб радиуса v·t (площадь 2r²)', () => {
+  const gg = buildGraph(gridWays(40)); // residential, редкие ожидания
+  const o = ll(2000, 2000);
+  const rep = isochroneReport(gg, { lat: o.lat, lon: o.lon }, {}, { bands: [5], speedMps: SPEED });
+  const r = 5 * 60 * SPEED; // 400 м
+  const ideal = 2 * r * r / 1e6;
+  const got = rep.isochrones[0].areaKm2;
+  // площадь завышена на 20–30% буфером растра (см. METHODOLOGY §7); меньше идеала быть не должна
+  assert.ok(got < ideal * 1.45 && got > ideal * 0.9, `${got} vs ${ideal}`);
+});
+
+console.log('Локализация');
+test('i18n: каждая строка _(\'…\') в коде имеет английский перевод, плейсхолдеры совпадают', () => {
+  const missing = [];
+  for (const f of fs.readdirSync(new URL('../js/', import.meta.url))) {
+    if (!f.endsWith('.js') || f === 'lang-en.js' || f === 'i18n.js') continue;
+    const src = fs.readFileSync(new URL('../js/' + f, import.meta.url), 'utf8');
+    for (const m of src.matchAll(/\b_\(\s*'((?:[^'\\]|\\.)*)'/g)) {
+      const key = m[1].replace(/\\'/g, "'");
+      if (!EN[key]) missing.push(f + ': ' + key.slice(0, 60));
+    }
+  }
+  assert.deepEqual(missing, []);
+  const ph = s => (s.match(/\{\w+\}/g) || []).sort().join();
+  for (const [k, v] of Object.entries(EN)) assert.equal(ph(v), ph(k), 'плейсхолдеры: ' + k.slice(0, 60));
+});
+test('i18n: подстановка и переключение языка', () => {
+  assert.equal(_('{n} путей', { n: 3 }), '3 путей');
+  setLang('en');
+  assert.equal(_('{n} путей', { n: 3 }), '3 ways');
+  assert.equal(_('нет такого ключа'), 'нет такого ключа');
+  setLang('ru');
+});
+test('i18n: категории и события переведены', () => {
+  for (const c of CATEGORIES) assert.ok(EN[c.label], c.label);
 });
 
 console.log(`\nГотово: ${passed} тестов пройдено`);
