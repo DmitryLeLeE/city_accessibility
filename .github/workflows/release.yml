@@ -63,7 +63,7 @@ jobs:
           ELECTRON_SKIP_BINARY_DOWNLOAD: '1'   # electron-builder сам скачает нужный Electron
       # Кэш бинарников Electron/electron-builder: github.com/releases иногда отвечает 504,
       # поэтому уже скачанное сохраняется даже при неудачной сборке и подхватывается следующим запуском.
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v6
         with:
           path: ${{ matrix.cache }}
           key: eb-${{ matrix.name }}-${{ github.run_id }}
@@ -78,7 +78,7 @@ jobs:
           exit 1
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'   # без подписи кода
-      - uses: actions/cache/save@v4
+      - uses: actions/cache/save@v6
         if: always()
         with:
           path: ${{ matrix.cache }}
