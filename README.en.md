@@ -29,7 +29,7 @@ time = length × path factor (surface, stairs, slope, sidewalk) / speed
 - Waits come from traffic-flow theory rather than being tuned: Webster `(C − g)² / (2C)` at signals, Adams `(e^{λt} − λt − 1) / λ` at unsignalised crossings (two-stage crossing).
 - Accessibility index: 100 points at ≤ 5 min, 0 at ≥ 20 min, linear in between; weighted by building levels as a population proxy.
 
-Full derivation, assumptions, error estimates and references: [docs/METHODOLOGY.md](docs/METHODOLOGY.md) (Russian).
+Full derivation, assumptions, error estimates and references: [docs/METHODOLOGY.en.md](docs/METHODOLOGY.en.md) ([Russian](docs/METHODOLOGY.md)).
 
 ## Run
 
