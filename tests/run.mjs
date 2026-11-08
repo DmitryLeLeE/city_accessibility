@@ -1,11 +1,12 @@
 // Тесты ядра на синтетической сетке улиц (без сети и браузера).
 import assert from 'node:assert/strict';
 import osmtogeojson from 'osmtogeojson';
-import { buildGraph, dijkstra } from '../js/graph.js';
+import { buildGraph, dijkstra, tracePath } from '../js/graph.js';
 import { wayModel, nodeFlags, inclineFactor, F_SIGNAL, F_ZEBRA, F_BLOCKED } from '../js/walkmodel.js';
-import { WALK, websterWait, adamsWait, unsignalizedWait } from '../js/config.js';
+import { WALK, websterWait, adamsWait, unsignalizedWait, applyParams, resetParams, getParams, paramsAreDefault } from '../js/config.js';
+import { setParams, restoreDefaults } from '../js/params.js';
 import { isochroneGeometry } from '../js/isochrone.js';
-import { prepareCategories, isochroneReport, buildDemand, computeAnalysis, makeGridGroups, scoreOf, districtsToCSV, analysisToGeoJSON } from '../js/analysis.js';
+import { prepareCategories, isochroneReport, buildDemand, computeAnalysis, makeGridGroups, scoreOf, routeToPoi, districtsToCSV, analysisToGeoJSON } from '../js/analysis.js';
 import { parsePois, buildingWeight } from '../js/overpass.js';
 import { pointInGeometry, geometryAreaM2, haversine, expandBBox } from '../js/geo.js';
 
@@ -333,6 +334,65 @@ test('спрос по зданиям; здания вне сети исключ�
   ];
   const d = buildDemand(g, { mode: 'buildings', buildings, bbox: expandBBox(bbox, 10000) });
   assert.equal(d.n, 1); assert.equal(d.skipped, 1);
+});
+
+
+
+console.log('Параметры модели');
+test('параметры: пересчёт таблиц и сброс', () => {
+  const base = WALK.signalWait[5];
+  assert.ok(paramsAreDefault());
+  const p = getParams(); p.signalCycle[5] = 60;
+  assert.ok(setParams(p));
+  assert.ok(WALK.signalWait[5] < base && Math.abs(WALK.signalWait[5] - websterWait(60, WALK.signalGreen[5])) < 1e-9);
+  assert.ok(!paramsAreDefault());
+  assert.ok(!setParams(p), 'повторное применение — без изменений');
+  setParams({ crossSpeed: -1, roadFlow: [1, 2] }); // некорректное игнорируется
+  assert.equal(WALK.crossSpeed, 1.2);
+  restoreDefaults();
+  assert.ok(paramsAreDefault() && Math.abs(WALK.signalWait[5] - base) < 1e-9);
+});
+
+console.log('Разбор маршрута');
+test('маршрут: время сходится с Дейкстрой, события — светофоры', () => {
+  const { ways, nid } = gridWays2(10, 100, { highway: 'primary' }, { highway: 'residential' });
+  const tags = new Map();
+  for (let i = 0; i <= 10; i++) for (let j = 0; j <= 10; j++) tags.set(nid(i, j), { highway: 'traffic_signals' });
+  const gs = buildGraph(ways, { nodeTags: tags });
+  const src = near(gs, 500, 0), dst = near(gs, 500, 500);
+  const d = dijkstra(gs, [{ node: src, cost0: 0 }], 1e9, SPEED, true);
+  const plain = dijkstra(gs, [{ node: src, cost0: 0 }], 1e9, SPEED);
+  assert.ok(Math.abs(d[dst] - plain[dst]) < 1e-6, 'track не меняет результат');
+  const p = tracePath(gs, d, dst, SPEED);
+  assert.ok(Math.abs(p.totalSec - d[dst]) < 1e-3);
+  assert.ok(Math.abs(p.walkSec + p.waitSec + p.startSec - p.totalSec) < 1e-3);
+  assert.ok(Math.abs(p.lengthM - 500) < 5, String(p.lengthM));
+  assert.equal(p.events.filter(e => e.kind === 'signal').length, 4);
+  assert.ok(Math.abs(p.waitSec - 4 * WALK.signalWait[5]) < 1);
+  assert.equal(p.nodes[0], src); assert.equal(p.nodes[p.nodes.length - 1], dst);
+});
+test('маршрут: недостижимый узел → null, источник с наименьшей ценой', () => {
+  const gg = buildGraph(gridWays(10));
+  const a = near(gg, 0, 0), b = near(gg, 1000, 1000), m = near(gg, 500, 500);
+  const d = dijkstra(gg, [{ node: a, cost0: 0 }, { node: b, cost0: 0 }], 1e9, SPEED, true);
+  const p = tracePath(gg, d, near(gg, 900, 900), SPEED);
+  assert.equal(p.sourceIndex, 1);
+  const d2 = dijkstra(gg, [{ node: a, cost0: 0 }], 60, SPEED, true);
+  assert.equal(tracePath(gg, d2, m, SPEED), null);
+});
+
+
+test('маршрут до объекта: итог совпадает с временем в отчёте изохрон', () => {
+  const gg = buildGraph(gridWays(20));
+  const poi = { cat: 'hospital', name: 'H', pts: [[ll(1000, 1000).lon, ll(1000, 1000).lat]] };
+  const prepared = prepareCategories(gg, [poi], ['hospital']);
+  const o = ll(0, 0);
+  const rep = isochroneReport(gg, { lat: o.lat, lon: o.lon }, prepared, { bands: [30], speedMps: SPEED });
+  const r = rep.cats.hospital.reached[0];
+  const rt = routeToPoi(gg, rep, r, SPEED);
+  assert.ok(Math.abs(rt.totalSec / 60 - r.minutes) < 1e-6);
+  assert.ok(Math.abs(rt.startSec + rt.walkSec + rt.waitSec + rt.endSec - rt.totalSec) < 1e-3);
+  assert.ok(rt.coords.length > 10 && rt.lengthM > 1900);
 });
 
 console.log('Разбор данных OSM');

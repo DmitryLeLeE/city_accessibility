@@ -154,6 +154,30 @@ export function unsignalizedWait(rank, lanes = 0) {
 }
 
 // Производные таблицы по рангам (используются там, где число полос неизвестно)
-WALK.signalWait = WALK.signalCycle.map((c, r) => (r ? websterWait(c, WALK.signalGreen[r]) : 0));
-WALK.unmarkedWait = WALK.roadWidth.map((_, r) => unsignalizedWait(r));
-WALK.zebraWait = WALK.unmarkedWait.map((w, r) => (r ? Math.max(1, w * (1 - WALK.zebraYield)) : 0));
+export function recomputeWalk() {
+  WALK.signalWait = WALK.signalCycle.map((c, r) => (r ? websterWait(c, WALK.signalGreen[r]) : 0));
+  WALK.unmarkedWait = WALK.roadWidth.map((_, r) => unsignalizedWait(r));
+  WALK.zebraWait = WALK.unmarkedWait.map((w, r) => (r ? Math.max(1, w * (1 - WALK.zebraYield)) : 0));
+}
+recomputeWalk();
+
+/** Редактируемые параметры модели (то, что можно менять в интерфейсе). Массивы — по рангам 0..6. */
+export const EDITABLE = ['signalCycle', 'signalGreen', 'roadWidth', 'roadFlow', 'crossSpeed', 'startUpLoss', 'zebraYield', 'markedFactor', 'gateDelay', 'stepsFactor'];
+export const DEFAULT_PARAMS = JSON.parse(JSON.stringify(Object.fromEntries(EDITABLE.map(k => [k, WALK[k]]))));
+export const getParams = () => JSON.parse(JSON.stringify(Object.fromEntries(EDITABLE.map(k => [k, WALK[k]]))));
+/** Применяет набор параметров (частичный), пересчитывает таблицы. Возвращает true, если что-то изменилось. */
+export function applyParams(p) {
+  let changed = false;
+  for (const k of EDITABLE) {
+    if (!p || p[k] === undefined) continue;
+    const v = Array.isArray(DEFAULT_PARAMS[k])
+      ? (Array.isArray(p[k]) && p[k].length === DEFAULT_PARAMS[k].length ? p[k].map(Number) : null)
+      : Number(p[k]);
+    if (v === null || (Array.isArray(v) ? v.some(x => !Number.isFinite(x) || x < 0) : !Number.isFinite(v) || v < 0)) continue;
+    if (JSON.stringify(v) !== JSON.stringify(WALK[k])) { WALK[k] = v; changed = true; }
+  }
+  if (changed) recomputeWalk();
+  return changed;
+}
+export const resetParams = () => applyParams(DEFAULT_PARAMS);
+export const paramsAreDefault = () => JSON.stringify(getParams()) === JSON.stringify(DEFAULT_PARAMS);

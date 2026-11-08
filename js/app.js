@@ -1,9 +1,13 @@
-import { CONFIG, CATEGORIES, BAND_COLORS, INDEX_STEPS, PROBLEM_COLOR } from './config.js';
-import { loadNetwork, loadNodeTags, loadPois, loadBuildings, listAdminLevels, loadAdminAreas, geocode } from './overpass.js';
+import { CONFIG, CATEGORIES, BAND_COLORS, INDEX_STEPS, PROBLEM_COLOR, WALK } from './config.js';
+import { loadNetwork, loadNodeTags, loadPois, loadBuildings, listAdminLevels, loadAdminAreas, geocode, clearMemoryCache } from './overpass.js';
 import { buildGraph } from './graph.js';
+import { F_SIGNAL, F_ZEBRA, F_MARKED, F_GATE, F_BLOCKED } from './walkmodel.js';
+import { loadSavedParams, setParams, restoreDefaults } from './params.js';
+import { methodHTML, readParamsFrom } from './method.js';
+import { storeClear, storeCount, cacheStats } from './store.js';
 import {
   prepareCategories, isochroneReport, buildDemand, computeAnalysis, makeGridGroups,
-  CAT_BY_ID, districtsToCSV, analysisToGeoJSON, isochronesToGeoJSON,
+  CAT_BY_ID, districtsToCSV, analysisToGeoJSON, isochronesToGeoJSON, routeToPoi,
 } from './analysis.js';
 import { bboxAround, expandBBox, bboxSpanKm, geometryBBox } from './geo.js';
 
@@ -24,7 +28,9 @@ const state = {
   tab: 'iso',
   sort: { key: 'index', dir: 1 },
   metric: 'share',
+  route: null,
 };
+loadSavedParams();
 
 // ── карта ───────────────────────────────────────────────────────────────────
 
@@ -44,6 +50,7 @@ L.control.layers(baseMaps, null, { position: 'topleft', collapsed: true }).addTo
 ['cells', 'districts', 'iso', 'zones', 'poi'].forEach((name, i) => { map.createPane(name).style.zIndex = 410 + i * 10; });
 
 const isoGroup = L.layerGroup().addTo(map);
+const routeGroup = L.layerGroup().addTo(map);
 const areaLayers = {
   cells: L.layerGroup(), districts: L.layerGroup(), zones: L.layerGroup(), poi: L.layerGroup(),
 };
@@ -69,6 +76,31 @@ function fail(e) {
   setStatus(e?.message || 'Что-то пошло не так.', false, true);
 }
 $('#cancel').addEventListener('click', () => state.abort?.abort());
+
+// ── журнал расчёта (открытость: что именно загружено и сколько это заняло) ───
+
+const logState = { lines: [], t0: 0 };
+function logStart(title) {
+  logState.lines = []; logState.t0 = performance.now();
+  logAdd(title);
+}
+function logAdd(msg) {
+  const t = ((performance.now() - logState.t0) / 1000).toFixed(1).padStart(5);
+  logState.lines.push(`[${t} с] ${msg}`);
+  $('#log').textContent = logState.lines.join('\n');
+  $('#log-box').hidden = false;
+}
+function logGraph(g, nodeTags) {
+  let sig = 0, zeb = 0, mk = 0, gate = 0, blk = 0;
+  for (let i = 0; i < g.n; i++) {
+    const f = g.nodeFlags[i];
+    if (f & F_SIGNAL) sig++; else if (f & F_ZEBRA) zeb++; else if (f & F_MARKED) mk++;
+    if (f & F_GATE) gate++;
+    if (f & F_BLOCKED) blk++;
+  }
+  logAdd(`граф: ${g.validCount} узлов, ${g.edges} рёбер, ${nf(g.lengthKm, 0)} км; светофоров ${sig}, «зебр» ${zeb}, размеченных переходов ${mk}, калиток ${gate}, закрытых проходов ${blk}`);
+  logAdd(`параметры: скорость ${nf(state.speedKmh, 1)} км/ч, ожидание на светофоре (primary) ${nf(WALK.signalWait[5], 1)} с, без регулирования (primary) ${nf(WALK.unmarkedWait[5], 1)} с`);
+}
 
 // ── параметры ───────────────────────────────────────────────────────────────
 
@@ -121,10 +153,12 @@ function setTab(tab) {
     Object.values(areaLayers).forEach(l => map.removeLayer(l));
     map.removeLayer(areaRect);
     isoGroup.addTo(map);
+    routeGroup.addTo(map);
     if (originMarker) originMarker.addTo(map);
     renderIsoLegend();
   } else {
     map.removeLayer(isoGroup);
+    map.removeLayer(routeGroup);
     if (originMarker) map.removeLayer(originMarker);
     if (state.area) attachAreaLayers();
     renderAreaLegend();
@@ -162,19 +196,33 @@ $('#search').addEventListener('submit', async e => {
 // ── загрузка данных ─────────────────────────────────────────────────────────
 
 async function loadAll(bbox, signal, buildingsBBox) {
+  const [w, s0, e, n] = bbox;
+  const [wKm, hKm] = bboxSpanKm(bbox);
+  logAdd(`область загрузки: ${nf(wKm, 1)} × ${nf(hKm, 1)} км (${s0.toFixed(4)},${w.toFixed(4)} — ${n.toFixed(4)},${e.toFixed(4)})`);
+  const hit0 = cacheStats.hits;
   const prog = label => (d, t) => setStatus(`${label}: ${d} из ${t} фрагментов…`, true);
-  const ways = await loadNetwork(bbox, { signal, onProgress: prog('Пешеходная сеть') });
-  const nodeTags = await loadNodeTags(bbox, { signal, onProgress: prog('Светофоры и переходы') });
-  const pois = await loadPois(bbox, { signal, onProgress: prog('Школы, больницы, парки') });
-  const buildings = buildingsBBox ? await loadBuildings(buildingsBBox, { signal, onProgress: prog('Здания') }) : null;
+  const step = async (label, fn, describe) => {
+    const t = performance.now();
+    const r = await fn();
+    logAdd(`${label}: ${describe(r)} (${((performance.now() - t) / 1000).toFixed(1)} с)`);
+    return r;
+  };
+  const ways = await step('пешеходная сеть (Overpass)', () => loadNetwork(bbox, { signal, onProgress: prog('Пешеходная сеть') }), r => `${r.length} путей`);
+  const nodeTags = await step('светофоры, переходы, калитки', () => loadNodeTags(bbox, { signal, onProgress: prog('Светофоры и переходы') }), r => `${r.size} узлов с тегами`);
+  const pois = await step('объекты: больницы, школы, парки…', () => loadPois(bbox, { signal, onProgress: prog('Школы, больницы, парки') }), r => `${r.length} объектов`);
+  const buildings = buildingsBBox ? await step('здания', () => loadBuildings(buildingsBBox, { signal, onProgress: prog('Здания') }), r => `${r.length} зданий`) : null;
+  logAdd(`фрагментов из локального кэша: ${cacheStats.hits - hit0}`);
   return { ways, nodeTags, pois, buildings };
 }
 
 function getGraph(ways, nodeTags) {
   const sig = `${ways.length}:${ways[0]?.id}:${ways[ways.length - 1]?.id}:${nodeTags.size}`;
-  if (state.graph?.sig === sig) return state.graph.g;
+  if (state.graph?.sig === sig) { logAdd('граф: использован построенный ранее'); return state.graph.g; }
+  const t = performance.now();
   const g = buildGraph(ways, { ...CONFIG.graph, nodeTags });
   state.graph = { sig, g };
+  logGraph(g, nodeTags);
+  logAdd(`граф построен за ${((performance.now() - t) / 1000).toFixed(1)} с`);
   return g;
 }
 
@@ -187,7 +235,9 @@ async function runIsochrone(latlng, { fit = true } = {}) {
   const radius = maxMin * 60 * speedMps() + CONFIG.snap.originM + CONFIG.snap.poiM + 100;
   const bbox = bboxAround(latlng.lat, latlng.lng, radius);
   state.origin = { lat: latlng.lat, lng: latlng.lng };
+  state.route = null; routeGroup.clearLayers(); $('#route-box').innerHTML = '';
   placeOrigin(latlng);
+  logStart(`изохроны из точки ${latlng.lat.toFixed(5)}, ${latlng.lng.toFixed(5)}; пороги ${bands.join('/')} мин`);
   try {
     setStatus('Загружаю данные OpenStreetMap…', true);
     const { ways, nodeTags, pois } = await loadAll(bbox, signal);
@@ -196,10 +246,13 @@ async function runIsochrone(latlng, { fit = true } = {}) {
     await tick();
     const g = getGraph(ways, nodeTags);
     const prepared = prepareCategories(g, pois, CATEGORIES.map(c => c.id));
+    const tIso = performance.now();
     const report = isochroneReport(g, { lat: latlng.lat, lon: latlng.lng }, prepared, { bands, speedMps: speedMps() });
+    if (report) logAdd(`расчёт Дейкстры и контуров: ${((performance.now() - tIso) / 1000).toFixed(2)} с; старт привязан к сети на ${Math.round(report.snapM)} м`);
     if (!report) throw new Error(`Рядом с точкой нет пешеходной сети (ближе ${CONFIG.snap.originM} м). Выберите точку у улицы.`);
-    state.iso = { report, bands };
+    state.iso = { report, bands, g };
     renderIso();
+    writeHash();
     const biggest = [...report.isochrones].reverse().find(i => i.geometry);
     if (fit && biggest) map.fitBounds(L.geoJSON(biggest.geometry).getBounds(), { padding: [40, 40], maxZoom: 16 });
     setStatus(`Готово: ${nf(g.lengthKm, 0)} км дорожек и улиц в расчёте.`);
@@ -261,7 +314,9 @@ function renderIso() {
     if (!c.reached.length) return '';
     const items = c.reached.slice(0, 8).map((r, i) => {
       const [lat, lon] = poiCenter(r.poi);
-      return `<li><button type="button" data-lat="${lat}" data-lon="${lon}">${esc(r.poi.name || 'Без названия')} — ${fmtMin(r.minutes)} мин</button></li>`;
+      return `<li><button type="button" data-lat="${lat}" data-lon="${lon}">${esc(r.poi.name || 'Без названия')} — ${fmtMin(r.minutes)} мин</button>
+        <button type="button" class="ghost mini" data-route="${id}:${i}" title="Показать маршрут и разбор времени">маршрут</button>
+        <button type="button" class="ghost mini" data-from="${lat},${lon}" title="Изохроны из этого объекта (зона охвата)">зона охвата</button></li>`;
     }).join('');
     return `<details><summary>${esc(cat.label)}: ${c.reached.length}</summary><ul class="poi-list">${items}</ul></details>`;
   }).join('');
@@ -276,11 +331,56 @@ function renderIso() {
 }
 
 $('#iso-result').addEventListener('click', e => {
+  const r = e.target.closest('button[data-route]');
+  if (r) return showRoute(r.dataset.route);
+  const f = e.target.closest('button[data-from]');
+  if (f) { const [la, lo] = f.dataset.from.split(',').map(Number); return calcFrom({ lat: la, lng: lo }); }
   const b = e.target.closest('button[data-lat]');
   if (b) map.flyTo([Number(b.dataset.lat), Number(b.dataset.lon)], 17, { duration: 0.6 });
 });
+
+// ── маршрут до объекта с разбором времени ────────────────────────────────────
+
+const EVENT_LABEL = {
+  signal: ['светофор', '#c0392b'], zebra: ['«зебра»', '#e67e22'], marked: ['размеченный переход', '#d4a017'],
+  unmarked: ['переход без регулирования', '#8e44ad'], gate: ['калитка / шлагбаум', '#7f8c8d'], midblock: ['переход посреди квартала', '#16a085'],
+};
+const fmtSec = x => (x >= 90 ? `${nf(x / 60, 1)} мин` : `${Math.round(x)} с`);
+
+function showRoute(key) {
+  const st = state.iso;
+  if (!st) return;
+  const [id, i] = key.split(':');
+  const reached = st.report.cats[id]?.reached[Number(i)];
+  if (!reached) return;
+  const rt = routeToPoi(st.g, st.report, reached, speedMps());
+  routeGroup.clearLayers();
+  if (!rt) { $('#route-box').innerHTML = '<p class="hint">Маршрут восстановить не удалось.</p>'; return; }
+  const line = L.polyline(rt.coords, { color: '#0b0b0b', weight: 4, opacity: 0.85 }).addTo(routeGroup);
+  for (const ev of rt.events) {
+    const [label, color] = EVENT_LABEL[ev.kind];
+    L.marker([ev.lat, ev.lon], { icon: L.divIcon({ className: '', html: `<div class="ev-pin" style="background:${color}"></div>`, iconSize: [16, 16], iconAnchor: [8, 8] }) })
+      .bindTooltip(`${label}: ожидание ${fmtSec(ev.sec)}`).addTo(routeGroup);
+  }
+  map.fitBounds(line.getBounds(), { padding: [50, 50], maxZoom: 17 });
+  const tot = rt.totalSec;
+  const parts = [['ходьба по сети', rt.walkSec, '#2a78d6'], ['ожидание на переходах', rt.waitSec, '#c0392b'], ['подход к сети', rt.startSec + rt.endSec, '#9aa0a6']];
+  const bar = parts.map(([, v, c]) => `<i style="width:${(v / tot) * 100}%;background:${c}" title="${fmtSec(v)}"></i>`).join('');
+  const legend = parts.map(([l, v, c]) => `<span class="chip"><i class="sw" style="background:${c}"></i>${l}: ${fmtSec(v)}</span>`).join('');
+  const byKind = {};
+  for (const ev of rt.events) { const k = byKind[ev.kind] ||= { n: 0, s: 0 }; k.n++; k.s += ev.sec; }
+  const evList = Object.entries(byKind).map(([k, v]) => `<li>${EVENT_LABEL[k][0]}: ${v.n} × → ${fmtSec(v.s)}</li>`).join('');
+  $('#route-box').innerHTML = `<div class="route">
+    <h4><span>${esc(reached.poi.name || CAT_BY_ID[id].label)}</span><span>${nf(tot / 60, 1)} мин · ${nf(rt.lengthM, 0)} м</span></h4>
+    <div class="bar">${bar}</div><div class="chips">${legend}</div>
+    ${evList ? `<ul>${evList}</ul>` : '<p class="hint">На маршруте нет значимых ожиданий.</p>'}
+    <p class="hint">Средняя скорость с учётом ожиданий: ${nf((rt.lengthM / tot) * 3.6, 1)} км/ч при расчётной ${nf(state.speedKmh, 1)}.</p>
+  </div>`;
+  logAdd(`маршрут до «${reached.poi.name || CAT_BY_ID[id].label}»: ${nf(rt.lengthM, 0)} м, ходьба ${fmtSec(rt.walkSec)}, ожидания ${fmtSec(rt.waitSec)} (${rt.events.length} событий)`);
+}
 $('#iso-clear').addEventListener('click', () => {
-  state.iso = null; state.origin = null;
+  state.iso = null; state.origin = null; state.route = null;
+  routeGroup.clearLayers(); $('#route-box').innerHTML = '';
   if (originMarker) { map.removeLayer(originMarker); originMarker = null; }
   renderIso();
   setStatus('Готово к работе.');
@@ -342,6 +442,7 @@ async function runAnalysis() {
   const btn = $('#run-area');
   btn.disabled = true;
   try {
+    logStart('анализ видимой области');
     const { bbox, clipped } = analysisBBox();
     areaRect.setBounds([[bbox[1], bbox[0]], [bbox[3], bbox[2]]]).addTo(map);
     const padM = CONFIG.index.worstMin * 60 * speedMps();
@@ -353,13 +454,16 @@ async function runAnalysis() {
     await tick();
     const g = getGraph(ways, nodeTags);
     const prepared = prepareCategories(g, pois, CATEGORIES.map(c => c.id));
+    logAdd('объекты привязаны к графу: ' + CATEGORIES.map(c => `${c.label.split(' ')[0]} ${prepared[c.id].items.length}`).join(', '));
     setStatus('Привязываю здания к сети…', true);
     await tick();
     let demand = buildDemand(g, { buildings, mode: weightMode, bbox });
     let usedMode = weightMode;
     if (!demand.n && weightMode === 'buildings') { demand = buildDemand(g, { mode: 'network', bbox }); usedMode = 'network'; }
     if (!demand.n) throw new Error('В выбранной области нет пешеходной сети.');
+    logAdd(`точек спроса: ${demand.n} (${usedMode === 'buildings' ? 'здания' : 'узлы сети'})`);
     const { groups, note } = await pickDistricts(bbox, $('#district-mode').value, signal);
+    logAdd(`районы: ${groups.length} (${note})`);
     state.area = { ctx: { g, prepared, demand, groups, bbox, pois, note, clipped, usedMode }, result: null };
     recomputeArea();
     setTab('area');
@@ -373,8 +477,11 @@ function recomputeArea() {
   if (!catIds.length) { setStatus('Выберите хотя бы одну категорию.', false, true); return; }
   setStatus('Считаю доступность…', true);
   const { g, prepared, demand, groups, bbox } = a.ctx;
+  const tA = performance.now();
   a.result = computeAnalysis({ g, prepared, demand, groups, catIds, bands: parseBands(), speedMps: speedMps(), bbox });
+  logAdd(`расчёт доступности: ${((performance.now() - tA) / 1000).toFixed(1)} с; ячеек ${a.result.cells.length}, проблемных зон ${a.result.zones.length}`);
   renderArea();
+  writeHash();
   const c = a.ctx;
   setStatus(`Готово. Районы: ${c.note}.${c.clipped ? ` Область урезана до ${CONFIG.maxAnalysisSpanKm} км — сдвиньте карту для другого участка.` : ''}`);
 }
@@ -556,4 +663,135 @@ function download(name, text, type) {
 }
 
 map.on('click', e => { if (state.tab === 'iso') runIsochrone(e.latlng); });
+
+// ── расчёт из любой точки по кнопке ──────────────────────────────────────────
+
+function calcFrom(latlng, zoom = 15) {
+  setTab('iso');
+  map.setView([latlng.lat, latlng.lng], Math.max(map.getZoom(), zoom));
+  return runIsochrone(latlng, { fit: true });
+}
+$('#from-center').addEventListener('click', () => calcFrom(map.getCenter(), 14));
+$('#from-geo').addEventListener('click', () => {
+  if (!navigator.geolocation) return setStatus('Геолокация недоступна в этом браузере.', false, true);
+  setStatus('Определяю местоположение…', true);
+  navigator.geolocation.getCurrentPosition(
+    pos => calcFrom({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+    err => setStatus(`Не удалось определить местоположение: ${err.message || 'доступ запрещён'}. Введите адрес или координаты.`, false, true),
+    { enableHighAccuracy: false, timeout: 10000 });
+});
+const COORD_RE = /^\s*(-?\d{1,2}(?:[.,]\d+)?)\s*[,;\s]\s*(-?\d{1,3}(?:[.,]\d+)?)\s*$/;
+$('#from-text').addEventListener('submit', async e => {
+  e.preventDefault();
+  const q = $('#from-q').value.trim();
+  if (!q) return;
+  const m = COORD_RE.exec(q);
+  if (m) {
+    const lat = parseFloat(m[1].replace(',', '.')), lng = parseFloat(m[2].replace(',', '.'));
+    if (Math.abs(lat) > 90 || Math.abs(lng) > 180) return setStatus('Координаты вне допустимого диапазона.', false, true);
+    return calcFrom({ lat, lng });
+  }
+  try {
+    setStatus('Ищу адрес…', true);
+    const res = await geocode(q, { signal: startTask() });
+    if (!res.length) return setStatus('Адрес не найден.', false, true);
+    const [w, s0, e2, n] = res[0].bbox;
+    calcFrom({ lat: (s0 + n) / 2, lng: (w + e2) / 2 });
+  } catch (err) { fail(err); }
+});
+
+// ── пресеты скорости ─────────────────────────────────────────────────────────
+
+function setSpeed(v, fromPreset) {
+  state.speedKmh = v;
+  $('#speed').value = v;
+  $('#speed-out').textContent = nf(v, 1) + ' км/ч';
+  const opt = [...$('#preset').options].find(o => o.value !== 'custom' && Number(o.value) === v);
+  $('#preset').value = opt ? opt.value : 'custom';
+  if (!fromPreset) writeHash();
+}
+$('#preset').addEventListener('change', e => {
+  if (e.target.value === 'custom') return;
+  setSpeed(Number(e.target.value), true);
+  scheduleRecalc();
+});
+$('#speed').addEventListener('input', e => setSpeed(Number(e.target.value)));
+
+// ── ссылка на расчёт (состояние в URL-хэше) ──────────────────────────────────
+
+function currentHash() {
+  const c = map.getCenter();
+  const q = new URLSearchParams();
+  q.set('c', `${c.lat.toFixed(5)},${c.lng.toFixed(5)}`);
+  q.set('z', map.getZoom());
+  q.set('s', state.speedKmh);
+  q.set('b', parseBands().join(','));
+  q.set('k', activeCatIds().join(','));
+  if (state.origin) q.set('o', `${state.origin.lat.toFixed(5)},${state.origin.lng.toFixed(5)}`);
+  return q.toString();
+}
+function writeHash() { try { history.replaceState(null, '', '#' + currentHash()); } catch { /* file:// и т. п. */ } }
+map.on('moveend', () => { clearTimeout(writeHash.t); writeHash.t = setTimeout(writeHash, 400); });
+$('#bands').addEventListener('change', writeHash);
+$('#share').addEventListener('click', async () => {
+  writeHash();
+  const url = location.href;
+  try { await navigator.clipboard.writeText(url); setStatus('Ссылка на текущий расчёт скопирована.'); }
+  catch { prompt('Скопируйте ссылку:', url); }
+});
+
+function restoreFromHash() {
+  if (!location.hash.length) return;
+  const q = new URLSearchParams(location.hash.slice(1));
+  const pair = v => (v || '').split(',').map(Number);
+  const [clat, clng] = pair(q.get('c'));
+  if (Number.isFinite(clat) && Number.isFinite(clng)) map.setView([clat, clng], Number(q.get('z')) || CONFIG.defaultZoom);
+  const sp = Number(q.get('s')); if (sp >= 3 && sp <= 6) setSpeed(sp, true);
+  if (q.get('b')) $('#bands').value = q.get('b');
+  if (q.get('k')) {
+    state.active = new Set(q.get('k').split(',').filter(id => CAT_BY_ID[id]));
+    if (!state.active.size) state.active = new Set(CATEGORIES.filter(c => c.default).map(c => c.id));
+  }
+  const [olat, olng] = pair(q.get('o'));
+  if (Number.isFinite(olat) && Number.isFinite(olng) && Math.abs(olat) <= 90 && Math.abs(olng) <= 180) {
+    setTimeout(() => runIsochrone({ lat: olat, lng: olng }, { fit: false }), 50);
+  }
+}
+
+// ── окно «Как считается» + параметры + кэш ───────────────────────────────────
+
+async function openMethod() {
+  const dlg = $('#method'), body = $('#method-body');
+  const draw = async () => {
+    body.innerHTML = methodHTML(state.speedKmh) + `
+      <h3>7. Локальный кэш данных</h3>
+      <p>Фрагменты OSM сохраняются в браузере (IndexedDB) на 7 дней, поэтому повторные расчёты в той же области не обращаются к сети. Сейчас сохранено фрагментов: <b id="cache-n">…</b>.</p>
+      <div class="params-actions"><button type="button" id="cache-clear">Очистить кэш</button></div>`;
+    $('#cache-n').textContent = await storeCount();
+  };
+  await draw();
+  if (!dlg.open) dlg.showModal();
+  body.onclick = async e => {
+    if (e.target.id === 'params-apply') {
+      if (setParams(readParamsFrom(body))) onParamsChanged();
+      draw();
+    } else if (e.target.id === 'params-reset') {
+      if (restoreDefaults()) onParamsChanged();
+      draw();
+    } else if (e.target.id === 'cache-clear') {
+      clearMemoryCache(); await storeClear(); draw(); setStatus('Кэш очищен.');
+    }
+  };
+}
+function onParamsChanged() {
+  state.graph = null; // таблицы ожиданий «запекаются» в граф — пересобираем
+  logAdd('параметры модели изменены — граф будет перестроен');
+  if (state.tab === 'iso' && state.origin) runIsochrone(state.origin, { fit: false });
+  else if (state.tab === 'area' && state.area) runAnalysis();
+  setStatus('Параметры применены, пересчитываю…', true);
+}
+$('#open-method').addEventListener('click', openMethod);
+$('#method').addEventListener('click', e => { if (e.target.id === 'method') e.target.close(); }); // клик по фону
+
+restoreFromHash();
 buildCatsUI();

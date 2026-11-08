@@ -14,7 +14,7 @@
 
 import { haversine } from './geo.js';
 import { WALK } from './config.js';
-import { wayModel, nodeFlags, crossWait, F_GATE, F_BLOCKED } from './walkmodel.js';
+import { wayModel, nodeFlags, crossWait, F_GATE, F_BLOCKED, F_SIGNAL, F_ZEBRA, F_MARKED } from './walkmodel.js';
 
 export function buildGraph(ways, opts = {}) {
   const maxSeg = opts.maxSegmentM ?? 40;
@@ -265,22 +265,33 @@ export function endpointPenalty(g, node) {
  * @param speedMps скорость пешехода, м/с
  * @returns Float64Array времени прибытия в узел, с (Infinity — недостижим)
  */
-export function dijkstra(g, sources, maxSec = Infinity, speedMps = 4.8 / 3.6) {
+export function dijkstra(g, sources, maxSec = Infinity, speedMps = 4.8 / 3.6, track = false) {
   const { n, adjStart, adjTo, adjCost, arcFrom, arcRev, arcCls, special, jStart, jMat, legIdx, nodeFlags: flags } = g;
   const inv = 1 / speedMps;
   const midBlock = WALK.unmarkedWait;
   const dist = new Float64Array(adjTo.length * 2).fill(Infinity); // состояние = дуга*2 + сторона (0 — справа по ходу)
   const nodeDist = new Float64Array(n).fill(Infinity);
   const heap = new MinHeap();
-  const relax = (st, nd) => { if (nd <= maxSec && nd < dist[st]) { dist[st] = nd; heap.push(nd, st); } };
+  // режим track: для восстановления маршрута храним предшественника, ожидание и тип перехода
+  const pred = track ? new Int32Array(adjTo.length * 2).fill(-1) : null;
+  const waitAt = track ? new Float32Array(adjTo.length * 2) : null;
+  const kindAt = track ? new Uint8Array(adjTo.length * 2) : null; // 0 — просто шаг, 1 — узел/перекрёсток, 2 — переход посреди квартала
+  const srcOf = track ? new Int32Array(adjTo.length * 2).fill(-1) : null;
+  const relax = (st, nd, from = -1, w = 0, k = 0, si = -1) => {
+    if (nd <= maxSec && nd < dist[st]) {
+      dist[st] = nd; heap.push(nd, st);
+      if (track) { pred[st] = from; waitAt[st] = w; kindAt[st] = k; srcOf[st] = si; }
+    }
+  };
 
-  for (const s of sources) {
+  for (let si = 0; si < sources.length; si++) {
+    const s = sources[si];
     if (s.cost0 > maxSec) continue;
     if (s.cost0 < nodeDist[s.node]) nodeDist[s.node] = s.cost0;
     for (let e = adjStart[s.node]; e < adjStart[s.node + 1]; e++) {
       const t = s.cost0 + adjCost[e] * inv;
-      relax(2 * e, t);
-      if (arcCls[e]) relax(2 * e + 1, t);
+      relax(2 * e, t, -1, 0, 0, si);
+      if (arcCls[e]) relax(2 * e + 1, t, -1, 0, 0, si);
     }
   }
 
@@ -296,10 +307,10 @@ export function dijkstra(g, sources, maxSec = Infinity, speedMps = 4.8 / 3.6) {
       // обычный узел степени 2: идём дальше по той же стороне
       const b = lo === arcRev[a] ? lo + 1 : lo;
       const nd = d + adjCost[b] * inv;
-      relax(2 * b + (arcCls[b] ? side : 0), nd);
+      relax(2 * b + (arcCls[b] ? side : 0), nd, st);
       // на небольших улицах можно перейти дорогу где угодно
       const c = arcCls[a];
-      if (c && c <= 2 && arcCls[b]) relax(2 * b + (1 - side), nd + midBlock[c]);
+      if (c && c <= 2 && arcCls[b]) relax(2 * b + (1 - side), nd + midBlock[c], st, midBlock[c], 2);
       continue;
     }
 
@@ -314,9 +325,59 @@ export function dijkstra(g, sources, maxSec = Infinity, speedMps = 4.8 / 3.6) {
       const kb = legIdx[b];
       const base = d + gate + adjCost[b] * inv;
       // уходим по правой стороне ветки (правый конец) или по левой
-      relax(2 * b, base + jMat[M + arrive * dim + 2 * kb + 1]);
-      if (arcCls[b]) relax(2 * b + 1, base + jMat[M + arrive * dim + 2 * kb]);
+      const w1 = jMat[M + arrive * dim + 2 * kb + 1];
+      relax(2 * b, base + w1, st, w1, 1);
+      if (arcCls[b]) { const w2 = jMat[M + arrive * dim + 2 * kb]; relax(2 * b + 1, base + w2, st, w2, 1); }
     }
   }
+  if (track) {
+    // лучшее состояние для каждого узла (последняя дуга, пришедшая в узел)
+    const nodeState = new Int32Array(n).fill(-1);
+    for (let st = 0; st < dist.length; st++) {
+      if (dist[st] === Infinity) continue;
+      const v = adjTo[st >> 1];
+      if (nodeState[v] < 0 || dist[st] <= dist[nodeState[v]]) nodeState[v] = st;
+    }
+    nodeDist.trace = { dist, pred, waitAt, kindAt, srcOf, nodeState, sources };
+  }
   return nodeDist;
+}
+
+/**
+ * Восстанавливает маршрут до узла из результата dijkstra(..., track=true).
+ * @returns {null | {sourceIndex, nodes:number[], walkSec, waitSec, startSec, lengthM, events:[{kind, sec, lat, lon, node}]}}
+ * kind: signal | zebra | marked | unmarked | gate | midblock
+ */
+export function tracePath(g, nodeDist, node, speedMps = 4.8 / 3.6) {
+  const tr = nodeDist.trace;
+  if (!tr || tr.nodeState[node] < 0) return null;
+  const { pred, waitAt, kindAt, srcOf, dist, sources } = tr;
+  const chain = [];
+  for (let st = tr.nodeState[node]; st >= 0; st = pred[st]) chain.push(st);
+  chain.reverse();
+  const first = chain[0];
+  const sourceIndex = srcOf[first];
+  const nodes = [g.arcFrom[first >> 1]];
+  const events = [];
+  let waitSec = 0, lengthM = 0;
+  for (const st of chain) {
+    const a = st >> 1, u = g.arcFrom[a], v = g.adjTo[a];
+    lengthM += g.adjCost[a];
+    nodes.push(v);
+    // ожидание происходит в узле u — начале дуги, на которую вышли
+    const fl = g.nodeFlags[u], k = kindAt[st], w = waitAt[st];
+    if (k === 2 && w > 0) {
+      waitSec += w; events.push({ kind: 'midblock', sec: w, lat: g.lat[u], lon: g.lon[u], node: u });
+    } else if (k === 1) {
+      if (fl & F_GATE) { waitSec += WALK.gateDelay; events.push({ kind: 'gate', sec: WALK.gateDelay, lat: g.lat[u], lon: g.lon[u], node: u }); }
+      if (w > 0.05) {
+        const kind = fl & F_SIGNAL ? 'signal' : fl & F_ZEBRA ? 'zebra' : fl & F_MARKED ? 'marked' : 'unmarked';
+        waitSec += w; events.push({ kind, sec: w, lat: g.lat[u], lon: g.lon[u], node: u });
+      }
+    }
+  }
+  const last = chain[chain.length - 1];
+  const startSec = sources[sourceIndex].cost0;
+  const total = dist[last];
+  return { sourceIndex, nodes, startSec, lengthM, waitSec, walkSec: total - startSec - waitSec, totalSec: total, events };
 }

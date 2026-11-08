@@ -2,6 +2,7 @@
 
 import { CONFIG, CATEGORIES } from './config.js';
 import { geometryAreaM2, sampleRing } from './geo.js';
+import { storeGet, storePut } from './store.js';
 
 const sleep = (ms, signal) => new Promise((resolve, reject) => {
   const t = setTimeout(resolve, ms);
@@ -51,11 +52,20 @@ export function tilesForBBox([w, s, e, n]) {
 const bboxStr = ([w, s, e, n]) => `${s.toFixed(6)},${w.toFixed(6)},${n.toFixed(6)},${e.toFixed(6)}`;
 
 const cache = new Map(); // "kind:ty:tx" → Promise
+export const clearMemoryCache = () => cache.clear();
+const CACHE_VER = 'v1';
 
 function cached(kind, tile, loader) {
-  const key = `${kind}:${tile.ty}:${tile.tx}`;
+  const key = `${CACHE_VER}:${kind}:${tile.ty}:${tile.tx}`;
   if (!cache.has(key)) {
-    const p = loader().catch(err => { cache.delete(key); throw err; });
+    // сначала постоянный кэш (IndexedDB), затем сеть
+    const p = (async () => {
+      const hit = await storeGet(key);
+      if (hit !== undefined) return hit;
+      const val = await loader();
+      storePut(key, val);
+      return val;
+    })().catch(err => { cache.delete(key); throw err; });
     cache.set(key, p);
   }
   return cache.get(key);

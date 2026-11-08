@@ -77,6 +77,7 @@ export function nodeFlags(tags = {}) {
 
 /** Среднее ожидание при переходе дороги ранга rank (секунды). */
 const unsignalizedCache = new Map();
+export const resetWalkCache = () => unsignalizedCache.clear();
 export function crossWait(flags, rank, lanes) {
   if (flags & F_SIGNAL) return WALK.signalWait[rank];
   const key = rank * 64 + Math.min(lanes, 63);

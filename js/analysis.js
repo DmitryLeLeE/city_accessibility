@@ -2,7 +2,7 @@
 // статистика по районам, отчёт по изохронам.
 
 import { CONFIG, CATEGORIES } from './config.js';
-import { dijkstra, endpointPenalty } from './graph.js';
+import { dijkstra, endpointPenalty, tracePath } from './graph.js';
 import { isochroneGeometry, gridToMultiPolygon } from './isochrone.js';
 import { makeProjector, pointInGeometry, geometryBBox } from './geo.js';
 
@@ -47,7 +47,7 @@ export function isochroneReport(g, origin, prepared, { bands, speedMps }) {
   if (!snap) return null;
   const maxMin = Math.max(...bands);
   const maxSec = maxMin * 60;
-  const dist = dijkstra(g, [{ node: snap.node, cost0: endSec(g, snap.node, snap.dist, speedMps) }], maxSec, speedMps);
+  const dist = dijkstra(g, [{ node: snap.node, cost0: endSec(g, snap.node, snap.dist, speedMps) }], maxSec, speedMps, true);
 
   const isochrones = [...bands].sort((a, b) => a - b).map(min => {
     const r = isochroneGeometry(g, dist, min * 60);
@@ -59,14 +59,14 @@ export function isochroneReport(g, origin, prepared, { bands, speedMps }) {
     const reached = [];
     for (const item of slot.items) {
       const c = poiSeconds(g, item, dist, speedMps);
-      if (c <= maxSec) reached.push({ poi: item.poi, minutes: c / 60 });
+      if (c <= maxSec) reached.push({ poi: item.poi, minutes: c / 60, ent: item.ent });
     }
     reached.sort((a, b) => a.minutes - b.minutes);
     const counts = {};
     for (const b of bands) counts[b] = reached.filter(r => r.minutes <= b).length;
     cats[id] = { reached, counts, nearest: reached[0]?.minutes ?? null };
   }
-  return { origin, snapM: snap.dist, isochrones, cats, networkNodes: g.validCount };
+  return { origin, snapM: snap.dist, snapNode: snap.node, dist, isochrones, cats, networkNodes: g.validCount };
 }
 
 // ── индекс и статистика ─────────────────────────────────────────────────────
@@ -317,4 +317,28 @@ export function makeGridGroups(bbox, cellM) {
     }
   }
   return groups;
+}
+
+
+/**
+ * Маршрут от точки расчёта до объекта из отчёта изохрон: лучший вход, путь по графу,
+ * разбивка времени на ходьбу, ожидание на переходах, подход к сети.
+ */
+export function routeToPoi(g, report, reached, speedMps) {
+  let best = null;
+  for (const e of reached.ent) {
+    const tail = endSec(g, e.node, e.snapM, speedMps);
+    const c = report.dist[e.node] + tail;
+    if (!best || c < best.c) best = { c, e, tail };
+  }
+  if (!best || !(best.c < Infinity)) return null;
+  const path = tracePath(g, report.dist, best.e.node, speedMps);
+  if (!path) return null;
+  return {
+    totalSec: best.c,
+    startSec: path.startSec, endSec: best.tail,
+    walkSec: path.walkSec, waitSec: path.waitSec, lengthM: path.lengthM,
+    events: path.events,
+    coords: path.nodes.map(n => [g.lat[n], g.lon[n]]),
+  };
 }

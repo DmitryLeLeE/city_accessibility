@@ -5,10 +5,86 @@
   "type": "module",
   "scripts": {
     "test": "node tests/run.mjs",
-    "start": "python3 -m http.server 8080"
+    "start": "python3 -m http.server 8080",
+    "desktop": "electron .",
+    "dist": "electron-builder",
+    "dist:win": "electron-builder --win"
   },
   "devDependencies": {
+    "electron": "^33.4.11",
+    "electron-builder": "^25.1.8",
+    "leaflet": "^1.9.4",
     "osmtogeojson": "^3.0.0-beta.5"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "main": "electron/main.cjs",
+  "author": {
+    "name": "Dmitry Papilin",
+    "url": "https://github.com/DmitryLeLeE"
+  },
+  "homepage": "https://github.com/DmitryLeLeE/city_accessibility",
+  "build": {
+    "appId": "io.github.dmitryleleE.cityaccessibility",
+    "productName": "City Accessibility",
+    "artifactName": "CityAccessibility-${version}-${os}-${arch}.${ext}",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "electron/**",
+      "index.html",
+      "css/**",
+      "js/**",
+      "vendor/**",
+      "LICENSE",
+      "package.json"
+    ],
+    "publish": null,
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "language": "1049",
+      "artifactName": "CityAccessibility-Setup-${version}.exe"
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Education",
+      "icon": "build/icon.png"
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "category": "public.app-category.education",
+      "icon": "build/icon.png"
+    },
+    "portable": {
+      "artifactName": "CityAccessibility-Portable-${version}.exe"
+    }
+  }
 }

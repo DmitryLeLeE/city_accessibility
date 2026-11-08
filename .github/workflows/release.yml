@@ -1,0 +1,71 @@
+name: Release desktop app
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+      - run: npm test
+
+  build:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, name: windows, args: --win, required: true }
+          - { os: ubuntu-latest,  name: linux,   args: --linux, required: false }
+          - { os: macos-latest,   name: macos,   args: --mac, required: false }
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ !matrix.required }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - name: Build installers
+        run: npx electron-builder ${{ matrix.args }} --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'   # без подписи кода
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.name }}
+          path: |
+            dist/*.exe
+            dist/*.AppImage
+            dist/*.dmg
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    if: ${{ always() && needs.build.result != 'cancelled' && startsWith(github.ref, 'refs/tags/v') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: release, pattern: desktop-*, merge-multiple: true }
+      - run: ls -la release
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          generate_release_notes: true
+          body: |
+            Десктопная версия City Accessibility — тот же расчёт, что и на сайте, но в отдельном окне; данные берутся из OpenStreetMap по мере необходимости.
+
+            - **Windows:** `CityAccessibility-Setup-*.exe` — установщик; `CityAccessibility-Portable-*.exe` — без установки.
+            - **Linux:** `.AppImage` (`chmod +x`, затем запуск).
+            - **macOS:** `.dmg` (сборка не подписана: первый запуск — через правый клик → «Открыть»).
+
+            Приложения не подписаны цифровой подписью: Windows SmartScreen может показать предупреждение — «Подробнее» → «Выполнить в любом случае».
