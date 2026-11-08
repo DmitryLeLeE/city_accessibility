@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>City Accessibility — пешая доступность города</title>
+  <meta name="description" content="Изохроны 5/10/15 минут, доступность больниц, школ и парков, проблемные районы и сравнение районов для любого города по данным OpenStreetMap.">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div id="app">
+  <aside id="panel">
+    <header class="head">
+      <h1>City Accessibility</h1>
+      <p class="sub">Пешая доступность любого города по данным OpenStreetMap</p>
+    </header>
+
+    <form id="search" autocomplete="off">
+      <input id="q" type="search" placeholder="Город или адрес, например «Саратов»" aria-label="Поиск места">
+      <button type="submit">Найти</button>
+    </form>
+    <ul id="search-results" class="results" hidden></ul>
+
+    <section class="block">
+      <h2>Параметры</h2>
+      <label class="row">
+        <span>Скорость пешехода</span>
+        <input id="speed" type="range" min="3" max="6" step="0.2" value="4.8">
+        <output id="speed-out">4,8 км/ч</output>
+      </label>
+      <label class="row">
+        <span>Изохроны, мин</span>
+        <input id="bands" type="text" value="5, 10, 15" inputmode="numeric" aria-describedby="bands-hint">
+      </label>
+      <p id="bands-hint" class="hint">До 4 значений от 1 до 30, через запятую.</p>
+      <fieldset class="cats">
+        <legend>Что считаем</legend>
+        <div id="cats"></div>
+      </fieldset>
+    </section>
+
+    <nav class="tabs" role="tablist">
+      <button role="tab" id="t-iso" data-tab="iso" aria-selected="true">Изохроны из точки</button>
+      <button role="tab" id="t-area" data-tab="area" aria-selected="false">Анализ города</button>
+    </nav>
+
+    <section id="tab-iso" class="tab" role="tabpanel" aria-labelledby="t-iso">
+      <p class="hint big">Кликните по карте в любом городе: покажем, докуда можно дойти пешком за 5, 10 и 15 минут и сколько объектов попадает в каждую зону. Маркер можно перетаскивать.</p>
+      <div id="iso-result"></div>
+      <div class="actions" id="iso-actions" hidden>
+        <button id="iso-export" class="ghost">Скачать GeoJSON</button>
+        <button id="iso-clear" class="ghost">Очистить</button>
+      </div>
+    </section>
+
+    <section id="tab-area" class="tab" role="tabpanel" aria-labelledby="t-area" hidden>
+      <p class="hint big">Анализ берёт <b>видимую область карты</b> (не больше <span id="max-span"></span> км по стороне), строит пешеходную сеть и считает время до ближайших объектов для каждого здания.</p>
+      <label class="row">
+        <span>Районы</span>
+        <select id="district-mode">
+          <option value="auto">Авто (административные границы)</option>
+          <option value="9">admin_level = 9</option>
+          <option value="10">admin_level = 10</option>
+          <option value="8">admin_level = 8</option>
+          <option value="7">admin_level = 7</option>
+          <option value="11">admin_level = 11</option>
+          <option value="grid1000">Квадраты 1 км</option>
+          <option value="grid500">Квадраты 500 м</option>
+          <option value="grid2000">Квадраты 2 км</option>
+        </select>
+      </label>
+      <label class="row">
+        <span>Где живут люди</span>
+        <select id="weight-mode">
+          <option value="buildings">По зданиям OSM (точнее, дольше)</option>
+          <option value="network">По улицам (быстро)</option>
+        </select>
+      </label>
+      <button id="run-area" class="primary">Рассчитать для видимой области</button>
+      <div id="area-result"></div>
+    </section>
+
+    <footer id="status" role="status" aria-live="polite">
+      <span class="spinner" aria-hidden="true"></span>
+      <span id="status-text">Готово к работе.</span>
+      <button id="cancel" class="ghost" hidden>Отмена</button>
+    </footer>
+    <p class="credits">Данные © участники <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> (ODbL). Расчёты выполняются в вашем браузере.</p>
+  </aside>
+
+  <main id="map-wrap">
+    <div id="map" aria-label="Карта"></div>
+    <div id="legend" class="legend" hidden></div>
+    <div id="layers" class="layers" hidden></div>
+  </main>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/osmtogeojson@3.0.0-beta.5/osmtogeojson.js"></script>
+<script type="module" src="js/app.js"></script>
+</body>
+</html>

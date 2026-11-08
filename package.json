@@ -1,0 +1,14 @@
+{
+  "name": "city-accessibility",
+  "version": "1.0.0",
+  "description": "Пешая доступность городской инфраструктуры: изохроны, районы, проблемные зоны (OpenStreetMap)",
+  "type": "module",
+  "scripts": {
+    "test": "node tests/run.mjs",
+    "start": "python3 -m http.server 8080"
+  },
+  "devDependencies": {
+    "osmtogeojson": "^3.0.0-beta.5"
+  },
+  "license": "MIT"
+}
