@@ -11,7 +11,8 @@
     "dist:win": "electron-builder --win",
     "test:e2e": "node tests/e2e/run.mjs",
     "lint": "eslint .",
-    "test:all": "npm test && npm run test:e2e"
+    "test:all": "npm test && npm run test:e2e",
+    "screenshots": "node tests/e2e/screenshots.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",

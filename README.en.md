@@ -21,6 +21,20 @@ Nothing needs to be downloaded to calculate: pick any point on the map and press
 - **Shareable links** (state in the URL hash), speed presets (average, elderly, stroller, small child, fast), local tile cache (IndexedDB, 7 days).
 - **Resilience:** 5 Overpass mirrors with cool-down for failed ones, timeouts and retry rounds; geocoder Nominatim → Photon fallback.
 
+## Screenshots
+
+> Screenshots are taken on a synthetic city (a perfect street grid, demo data) so they are reproducible offline — `npm run screenshots`. Real cities look the same, with actual OSM streets.
+
+| 5 / 10 / 15-minute isochrones | Route with a breakdown of waits |
+|---|---|
+| ![Isochrones](docs/img/isochrones-en.png) | ![Route](docs/img/route-en.png) |
+
+| Area analysis: index and problem zones | "What if": a hypothetical school |
+|---|---|
+| ![Area analysis](docs/img/area-en.png) | ![What if](docs/img/whatif-en.png) |
+
+![Methodology dialog](docs/img/method-en.png)
+
 ## How travel time is computed
 
 ```
