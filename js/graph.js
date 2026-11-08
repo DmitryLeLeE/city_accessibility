@@ -266,7 +266,7 @@ export function endpointPenalty(g, node) {
  * @returns Float64Array времени прибытия в узел, с (Infinity — недостижим)
  */
 export function dijkstra(g, sources, maxSec = Infinity, speedMps = 4.8 / 3.6, track = false) {
-  const { n, adjStart, adjTo, adjCost, arcFrom, arcRev, arcCls, special, jStart, jMat, legIdx, nodeFlags: flags } = g;
+  const { n, adjStart, adjTo, adjCost, arcRev, arcCls, special, jStart, jMat, legIdx, nodeFlags: flags } = g;
   const inv = 1 / speedMps;
   const midBlock = WALK.unmarkedWait;
   const dist = new Float64Array(adjTo.length * 2).fill(Infinity); // состояние = дуга*2 + сторона (0 — справа по ходу)

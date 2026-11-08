@@ -145,7 +145,9 @@ I_D = Σ_{i∈D} w_i · s̄(i) / Σ_{i∈D} w_i
 
 A truncated linear decay is the simplest "kernel" distance function in gravity accessibility measures (Hansen, 1959): it decreases monotonically and reaches zero beyond a reasonable walking reach. The thresholds of 5 and 20 min are parameters (`CONFIG.index`): ≤ 5 min (≈ 400 m) counts as "nearby", ≥ 20 min as "out of walking reach". For each category the shares of demand within the given thresholds (5/10/15 min by default) and the weighted median time are also computed.
 
-**Demand.** OSM has no resident counts, so the dasymetric principle (Mennis, 2003) is applied: residential buildings are given a weight proportional to the number of levels (`building:levels`; apartment buildings without the tag count 5, the others 1; non-residential types are filtered out). This is a proxy, not a census: levels are not residents, and some buildings are not mapped. The "By streets" mode replaces buildings with network nodes weighted by street length.
+**Demand.** OSM has no resident counts, so the dasymetric principle (Mennis, 2003) is applied: residential buildings are given a weight proportional to the number of levels (`building:levels`; apartment buildings without the tag count 5, the others 1; non-residential types are filtered out). This is a proxy, not a census: levels are not residents, and some buildings are not mapped. The "By streets" mode replaces buildings with network nodes weighted by street length. The "My population data" mode takes points (or polygon centroids) from an uploaded GeoJSON with the weight from the `pop` / `population` / `people` / `weight` property (otherwise 1); a point is snapped to the nearest network node within the building snap radius and unsnapped points are skipped. A polygon is reduced to the centroid of its outer ring and carries its whole weight there; for large polygons (districts) prefer points.
+
+**"What if" scenarios.** A hypothetical facility is added to the Dijkstra sources of its category (snapped like ordinary facilities), the calculation is repeated and the results are compared with the baseline without the added facilities (index, number of problem zones, resident shares within the threshold). A facility is a single point with one entrance; a park is not modelled as an area.
 
 ## 9. Problem zones
 
@@ -191,7 +193,8 @@ Data come from public services that can be unavailable, so requests are made wit
 - **Parameters are not calibrated for a specific city.** Flows, widths and signal cycles are set by road class. For accurate estimates replace them with measurements; the architecture allows this: `roadFlow`, `roadWidth`, `signalCycle`, `signalGreen` are one object.
 - **Terrain**, intensity and phases of real signals, weather, time of day, age and mobility of pedestrians are not accounted for.
 - **OSM completeness.** Where sidewalks and crossings are not mapped, the model relies on road classes. Result quality in a city is bounded by the quality of its map.
-- **Population proxy.** See section 8.
+- **Population proxy.** See section 8; your own population data replaces the proxy, but its quality and date are on you.
+- **Scenarios** show the change in accessibility under the model, not a forecast of how a facility will be used: capacity, opening hours and queues are not considered.
 - **Isochrone area overstatement** of ≈ 20–30 % because of the raster buffer (section 7).
 - **Cache and freshness:** data in the local cache can be up to 7 days older than OSM; the "Clear cache" button removes this.
 

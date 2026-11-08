@@ -13,6 +13,9 @@ Nothing needs to be downloaded to calculate: pick any point on the map and press
 - **Pedestrian network analysis:** travel time accounts for intersections (traffic lights, zebras, uncontrolled crossings, side of the road), surface, stairs, slope, gates and missing sidewalks.
 - **Problem-area detection:** 150 m cells with a low index are merged into numbered problem zones.
 - **District comparison:** OSM administrative boundaries or square grids; sortable table; CSV and GeoJSON export.
+- **Your own data:** upload GeoJSON with custom facilities (points/polygons, a new category) and population (points/polygons with a `pop` property) replacing the building-based estimate. Files never leave the browser.
+- **"What if" scenarios:** in area analysis place a hypothetical school, hospital, park… and see the change in index, problem-zone count and resident shares per category.
+- **Compare and print:** save calculations in the browser and compare several (city, speed, scenario) in one table / CSV; "Print / PDF" gives a print layout with parameters and date.
 - **Route breakdown:** the path to a facility with time split into walking, waiting at crossings and network access; crossings shown on the map.
 - **Transparency:** "How it is calculated" dialog with formulas and live parameter tables, an editable model (signal cycles, road widths and flows, crossing speed…), and a calculation log.
 - **Shareable links** (state in the URL hash), speed presets (average, elderly, stroller, small child, fast), local tile cache (IndexedDB, 7 days).
@@ -37,7 +40,9 @@ Full derivation, assumptions, error estimates and references: [docs/METHODOLOGY.
 git clone https://github.com/DmitryLeLeE/city_accessibility
 cd city_accessibility
 npm start          # http://localhost:8080
-npm test           # 54 tests, no network or browser needed
+npm test           # 58 unit tests, no network or browser needed
+npm run lint       # ESLint
+npm run test:e2e   # browser e2e (Playwright, mocked Overpass); needs Chromium or CHROME_PATH
 npm run desktop    # desktop window (Electron)
 ```
 
@@ -45,7 +50,11 @@ Desktop installers (Windows installer and portable, Linux AppImage, macOS dmg) a
 
 ## Limitations
 
-OpenStreetMap completeness limits accuracy; signal cycles and traffic flows are typical values by road class, not measurements (editable in the app); building levels are a proxy for population, not a census; Overpass is a shared free service and may be slow or briefly unavailable (the app switches mirrors automatically).
+OpenStreetMap completeness limits accuracy; signal cycles and traffic flows are typical values by road class, not measurements (editable in the app); building levels are a proxy for population, not a census (you can upload your own data); Overpass is a shared free service and may be slow or briefly unavailable (the app switches mirrors automatically).
+
+## Contributing and privacy
+
+[CONTRIBUTING.md](CONTRIBUTING.md), [CHANGELOG.md](CHANGELOG.md), [PRIVACY.md](PRIVACY.md) — which external requests the app makes and what is stored in the browser.
 
 ## Data and licences
 

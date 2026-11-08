@@ -3,9 +3,9 @@
   --surface-2: #f4f3f0;
   --ink: #0b0b0b;
   --ink-2: #52514e;
-  --ink-3: #7b7a75;
+  --ink-3: #66655f;
   --line: #e4e3df;
-  --accent: #2a78d6;
+  --accent: #1f69c0;
   --accent-ink: #ffffff;
   --problem: #e34948;
   --radius: 10px;
@@ -166,3 +166,37 @@ dialog#method::backdrop { background: rgba(0,0,0,.35); }
 .formula { display: block; padding: 8px 12px; margin: 6px 0; white-space: pre-wrap; }
 #method-body table input { width: 64px; padding: 3px 5px; text-align: right; }
 #method-body .params-actions { display: flex; gap: 8px; margin: 10px 0; flex-wrap: wrap; align-items: center; }
+
+/* свои данные, «что если», сохранённые расчёты */
+.own-data { margin-top: 10px; }
+.own-data summary { cursor: pointer; font-weight: 600; }
+.own-data .row input[type=file] { max-width: 230px; }
+.row2 { display: flex; gap: 8px; align-items: center; margin: 6px 0; }
+.row2 > :first-child { flex: 1; min-width: 0; }
+.whatif .wi-list { list-style: none; margin: 6px 0; padding: 0; }
+.whatif .wi-list li { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 2px 0; }
+.wi-tiles { margin-top: 8px; }
+.up { color: #0a7a3d; } .down { color: #b3261e; }
+.wi-pin { width: 24px; height: 24px; border-radius: 50%; background: #fff; border: 3px dashed; display: grid; place-items: center; font-weight: 700; font-size: 12px; }
+#map.picking { cursor: crosshair; }
+#map.picking .leaflet-interactive { cursor: crosshair; }
+table.saved tr.cur td { font-weight: 600; background: rgba(0,0,0,.04); }
+.print-head { display: none; }
+
+/* печать / PDF: панель результатов + карта, без элементов управления */
+@media print {
+  @page { size: A4; margin: 12mm; }
+  html, body { height: auto; background: #fff; }
+  #app { display: block; height: auto; }
+  #panel { overflow: visible; border: 0; padding: 0; }
+  #panel .head-actions, #search, #search-results, .tabs, .block > label, .block > button, #bands-hint, #cats, fieldset.cats, .own-data,
+  #log-box, #status, .whatif .row2, #wi-reset, .actions, [data-wi-del], [data-sv-del], .row2, #layers, .leaflet-control-container, .credits-screen { display: none !important; }
+  .print-head { display: block; margin: 0 0 8px; font-size: 12px; }
+  #map-wrap { position: relative; height: 110mm; margin: 8px 0; page-break-inside: avoid; }
+  #map { position: absolute; inset: 0; }
+  .legend { position: absolute; }
+  .tbl-wrap { overflow: visible; max-height: none; }
+  table { page-break-inside: auto; font-size: 11px; }
+  tr { page-break-inside: avoid; }
+  #tab-iso[hidden], #tab-area[hidden] { display: none !important; }
+}

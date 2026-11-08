@@ -8,13 +8,21 @@
     "start": "python3 -m http.server 8080",
     "desktop": "electron .",
     "dist": "electron-builder",
-    "dist:win": "electron-builder --win"
+    "dist:win": "electron-builder --win",
+    "test:e2e": "node tests/e2e/run.mjs",
+    "lint": "eslint .",
+    "test:all": "npm test && npm run test:e2e"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "axe-core": "^4.14.0",
     "electron": "^33.4.11",
     "electron-builder": "^25.1.8",
+    "eslint": "^9.39.5",
+    "globals": "^17.14.0",
     "leaflet": "^1.9.4",
-    "osmtogeojson": "^3.0.0-beta.5"
+    "osmtogeojson": "^3.0.0-beta.5",
+    "playwright": "1.49"
   },
   "license": "MIT",
   "main": "electron/main.cjs",

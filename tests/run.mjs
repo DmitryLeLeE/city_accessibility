@@ -3,16 +3,18 @@ import assert from 'node:assert/strict';
 import osmtogeojson from 'osmtogeojson';
 import { buildGraph, dijkstra, tracePath } from '../js/graph.js';
 import { wayModel, nodeFlags, inclineFactor, F_SIGNAL, F_ZEBRA, F_BLOCKED } from '../js/walkmodel.js';
-import { WALK, websterWait, adamsWait, unsignalizedWait, applyParams, resetParams, getParams, paramsAreDefault } from '../js/config.js';
+import { WALK, websterWait, adamsWait, unsignalizedWait, getParams, paramsAreDefault } from '../js/config.js';
 import { setParams, restoreDefaults } from '../js/params.js';
 import { isochroneGeometry } from '../js/isochrone.js';
-import { prepareCategories, isochroneReport, buildDemand, computeAnalysis, makeGridGroups, scoreOf, routeToPoi, districtsToCSV, analysisToGeoJSON } from '../js/analysis.js';
+import { prepareCategories, isochroneReport, buildDemand, computeAnalysis, makeGridGroups, scoreOf, routeToPoi, withVirtual, summarizeResult, districtsToCSV, analysisToGeoJSON } from '../js/analysis.js';
 import { parsePois, buildingWeight, runOverpass, geocode, parsePhoton, overpassPool } from '../js/overpass.js';
 import { EN } from '../js/lang-en.js';
 import { _, setLang } from '../js/i18n.js';
 import fs from 'node:fs';
 import { MirrorPool, withFailover } from '../js/failover.js';
 import { CONFIG, CATEGORIES } from '../js/config.js';
+import { loadSaved, addSaved, removeSaved, savedToCSV } from '../js/saved.js';
+import { parseCustomPois, parsePopulation, popValue } from '../js/custom.js';
 import { pointInGeometry, geometryAreaM2, haversine, expandBBox } from '../js/geo.js';
 
 globalThis.osmtogeojson = osmtogeojson;
@@ -332,6 +334,32 @@ test('анализ по сетке-районам и проблемные зон
   assert.equal(z.outline.type, 'MultiPolygon');
   assert.ok(Math.abs(geometryAreaM2(z.outline) - z.areaKm2 * 1e6) / (z.areaKm2 * 1e6) < 0.05, 'площадь контура зоны = площади ячеек');
 });
+test('сценарий «что если»: виртуальный объект повышает индекс и не меняет исходные данные', () => {
+  const demand = buildDemand(g, { mode: 'network', bbox });
+  const groups = makeGridGroups(bbox, 1000);
+  const run = pr => computeAnalysis({ g, prepared: pr, demand, groups, catIds: ['school', 'park'], bands: [5, 10, 15], speedMps: SPEED, bbox });
+  const base = summarizeResult(run(prepared));
+  const nSrc = prepared.school.sources.length;
+  const far = ll(2800, 2800);
+  const sc = withVirtual(g, prepared, [{ cat: 'school', ...far }, { cat: 'park', ...far }, { cat: 'school', lat: 10, lon: 10 }]);
+  assert.equal(sc.placed, 2);
+  assert.equal(prepared.school.sources.length, nSrc, 'исходные данные не изменены');
+  const after = summarizeResult(run(sc.prepared));
+  assert.ok(after.index > base.index, `${base.index} → ${after.index}`);
+  assert.ok(after.cats.school.share >= base.cats.school.share);
+  assert.ok(after.zones <= base.zones);
+});
+test('сохранённые расчёты: добавление, лимит, удаление, CSV', () => {
+  const mem = new Map(); const st = { getItem: k => mem.get(k) ?? null, setItem: (k, v) => mem.set(k, v) };
+  assert.deepEqual(loadSaved(st), []);
+  for (let i = 0; i < 25; i++) addSaved({ name: `r${i}`, ts: 1700000000000 + i, speedKmh: 4.8, summary: { index: 50 + i, zones: i, maxBand: 15, cats: { school: { share: 40, median: 9 } } } }, st);
+  const list = loadSaved(st);
+  assert.equal(list.length, 20); assert.equal(list[0].name, 'r24');
+  assert.equal(removeSaved(list[0].id, st).length, 19);
+  const csv = savedToCSV(list.slice(0, 2), { school: 'Школы' }, { name: 'Имя', date: 'Дата', speed: 'Скорость', index: 'Индекс', zones: 'Зон', share: '%' });
+  assert.ok(csv.includes('Школы, %') && csv.split('\n').length === 3);
+  assert.deepEqual(loadSaved({ getItem: () => '{bad' }), []);
+});
 test('спрос по зданиям; здания вне сети исключаются', () => {
   const buildings = [
     { id: 1, ...ll(1500, 1510), w: 5 },
@@ -341,7 +369,33 @@ test('спрос по зданиям; здания вне сети исключ�
   assert.equal(d.n, 1); assert.equal(d.skipped, 1);
 });
 
-
+test('свои данные: объекты (точки, полигоны) и население', () => {
+  const sq = [[46, 51.5], [46.002, 51.5], [46.002, 51.502], [46, 51.502], [46, 51.5]];
+  const { pois, skipped } = parseCustomPois({ type: 'FeatureCollection', features: [
+    { type: 'Feature', properties: { name: 'A' }, geometry: { type: 'Point', coordinates: [46.001, 51.501] } },
+    { type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: [sq] } },
+    { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [[0, 0], [1, 1]] } },
+    { type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: [500, 91] } },
+  ] });
+  assert.equal(pois.length, 2); assert.equal(skipped, 2);
+  assert.equal(pois[0].name, 'A'); assert.equal(pois[0].cat, 'custom');
+  assert.ok(pois[1].pts.length >= 4 && pois[1].pts.length <= 40);
+  const pop = parsePopulation({ type: 'FeatureCollection', features: [
+    { type: 'Feature', properties: { pop: '120' }, geometry: { type: 'Point', coordinates: [46.001, 51.501] } },
+    { type: 'Feature', properties: { population: 300 }, geometry: { type: 'Polygon', coordinates: [sq] } },
+  ] });
+  assert.equal(pop.pts.length, 2); assert.equal(pop.total, 420);
+  assert.ok(Math.abs(pop.pts[1].lon - 46.001) < 1e-6 && Math.abs(pop.pts[1].lat - 51.501) < 1e-6);
+  assert.equal(popValue({}), 1);
+  assert.throws(() => parseCustomPois({ foo: 1 }));
+  const only = prepareCategories(g, pois, ['custom']);
+  assert.ok(only.custom.items.length >= 1);
+});
+test('спрос по своим точкам населения', () => {
+  const custom = [{ ...ll(1500, 1510), w: 700 }, { ...ll(9000, 9000), w: 5 }];
+  const d = buildDemand(g, { mode: 'custom', custom, bbox: expandBBox(bbox, 10000) });
+  assert.equal(d.n, 1); assert.equal(d.w[0], 700); assert.equal(d.source, 'custom');
+});
 
 console.log('Параметры модели');
 test('параметры: пересчёт таблиц и сброс', () => {
@@ -540,7 +594,6 @@ test('сверка: случайные сети — нижняя граница,
   }
 });
 test('сверка: без ожиданий (нулевые параметры) время = длина × множитель / скорость', () => {
-  const base = getParams();
   const z = getParams();
   z.signalCycle = z.signalCycle.map(() => 0); z.signalGreen = z.signalGreen.map(() => 0); z.roadFlow = z.roadFlow.map(() => 0); z.gateDelay = 0;
   setParams(z);

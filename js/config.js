@@ -87,6 +87,13 @@ export const CATEGORIES = [
     filters: ['["highway"="bus_stop"]', '["railway"="tram_stop"]', '["railway"="subway_entrance"]'],
     match: t => t.highway === 'bus_stop' || t.railway === 'tram_stop' || t.railway === 'subway_entrance',
   },
+  {
+    // Не из OSM: заполняется загруженным пользователем GeoJSON (js/custom.js)
+    id: 'custom', label: 'Свои объекты', color: '#222222', glyph: '★',
+    default: false, kind: 'point', custom: true,
+    filters: [],
+    match: () => false,
+  },
 ];
 
 // Палитры (одна гамма для карты и таблицы)

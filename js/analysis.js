@@ -80,9 +80,19 @@ export function scoreOf(minutes, { bestMin, worstMin } = CONFIG.index) {
 }
 
 /** Точки спроса: здания (вес = этажность) или узлы пешеходной сети (вес = длина). */
-export function buildDemand(g, { buildings, mode, bbox }) {
+export function buildDemand(g, { buildings, mode, bbox, custom }) {
   const [w, s, e, n] = bbox;
   const lat = [], lon = [], wt = [], node = [], snapM = [];
+  if (mode === 'custom' && custom?.length) {
+    let skipped = 0;
+    for (const b of custom) {
+      if (b.lon < w || b.lon > e || b.lat < s || b.lat > n) continue;
+      const sn = g.snap(b.lat, b.lon, CONFIG.snap.buildingM);
+      if (!sn) { skipped++; continue; }
+      lat.push(b.lat); lon.push(b.lon); wt.push(b.w); node.push(sn.node); snapM.push(sn.dist);
+    }
+    return { n: lat.length, lat, lon, w: wt, node, snapM, skipped, source: 'custom' };
+  }
   if (mode === 'buildings' && buildings?.length) {
     let skipped = 0;
     for (const b of buildings) {
@@ -342,4 +352,32 @@ export function routeToPoi(g, report, reached, speedMps) {
     events: path.events,
     coords: path.nodes.map(n => [g.lat[n], g.lon[n]]),
   };
+}
+
+/**
+ * Сценарий «что если»: добавляет гипотетические объекты к подготовленным категориям.
+ * Исходный prepared не меняется. virtuals: [{cat, lat, lon}].
+ */
+export function withVirtual(g, prepared, virtuals, snapM = CONFIG.snap.poiM) {
+  const out = {};
+  for (const [id, slot] of Object.entries(prepared)) out[id] = { items: slot.items.slice(), sources: slot.sources.slice() };
+  let placed = 0;
+  virtuals.forEach((v, i) => {
+    const slot = out[v.cat];
+    const s = slot && g.snap(v.lat, v.lon, snapM);
+    if (!s) return;
+    const poi = { id: `virtual${i}`, name: '', cat: v.cat, lat: v.lat, lon: v.lon, pts: [[v.lon, v.lat]], virtual: true };
+    slot.items.push({ poi, ent: [{ node: s.node, snapM: s.dist }] });
+    slot.sources.push({ node: s.node, snapM: s.dist });
+    placed++;
+  });
+  return { prepared: out, placed };
+}
+
+/** Сводка результата для сравнения (сценарии, сохранённые расчёты). */
+export function summarizeResult(res) {
+  const maxBand = res.bands[res.bands.length - 1];
+  const cats = {};
+  for (const id of res.catIds) cats[id] = { share: res.overall.stats[id].shares[maxBand], median: res.overall.stats[id].median };
+  return { index: res.overall.index, zones: res.zones.length, maxBand, cats };
 }

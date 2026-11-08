@@ -17,10 +17,12 @@
       <div class="head-actions">
         <button type="button" id="open-method" class="ghost">Как считается</button>
         <button type="button" id="share" class="ghost">Скопировать ссылку</button>
-        <button type="button" id="lang" class="ghost" aria-label="Language">EN</button>
+        <button type="button" id="print" class="ghost">Печать / PDF</button>
+        <button type="button" id="lang" class="ghost" title="Language / Язык">EN</button>
       </div>
     </header>
 
+    <div id="print-head" class="print-head" aria-hidden="true"></div>
     <form id="search" autocomplete="off">
       <input id="q" type="search" placeholder="Город или адрес, например «Саратов»" aria-label="Поиск места">
       <button type="submit">Найти</button>
@@ -54,6 +56,16 @@
         <legend>Что считаем</legend>
         <div id="cats"></div>
       </fieldset>
+      <details class="own-data" id="own-data">
+        <summary>Свои данные (GeoJSON)</summary>
+        <label class="row"><span>Свои объекты</span>
+          <input type="file" id="file-pois" accept=".geojson,.json,application/geo+json,application/json"></label>
+        <label class="row"><span>Население</span>
+          <input type="file" id="file-pop" accept=".geojson,.json,application/geo+json,application/json"></label>
+        <p class="hint">Объекты: точки или полигоны (вход — по границе), считаются как отдельная категория. Население: точки или полигоны со свойством <code>pop</code> (или population, weight); заменяет оценку по зданиям. Файлы остаются в браузере.</p>
+        <div id="own-status" class="hint"></div>
+        <button id="own-clear" type="button" hidden>Убрать свои данные</button>
+      </details>
     </section>
 
     <nav class="tabs" role="tablist">
@@ -102,6 +114,7 @@
         <select id="weight-mode">
           <option value="buildings">По зданиям OSM (точнее, дольше)</option>
           <option value="network">По улицам (быстро)</option>
+          <option value="custom" id="opt-custom" hidden>Свои данные о населении</option>
         </select>
       </label>
       <button id="run-area" class="primary">Рассчитать для видимой области</button>
@@ -118,7 +131,7 @@
       <span id="status-text">Готово к работе.</span>
       <button id="cancel" class="ghost" hidden>Отмена</button>
     </footer>
-    <p class="credits">Данные © участники <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> (ODbL). Расчёты выполняются в вашем браузере.</p>
+    <p class="credits">Данные © участники <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> (ODbL). Расчёты выполняются в вашем браузере. <a href="https://github.com/DmitryLeLeE/city_accessibility/blob/main/PRIVACY.md" target="_blank" rel="noopener">Конфиденциальность</a></p>
   </aside>
 
   <main id="map-wrap">

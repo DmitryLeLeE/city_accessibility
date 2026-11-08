@@ -1,4 +1,6 @@
 import { CONFIG, CATEGORIES, BAND_COLORS, INDEX_STEPS, PROBLEM_COLOR, WALK } from './config.js';
+import { loadSaved, addSaved, removeSaved, clearSaved, savedToCSV } from './saved.js';
+import { parseCustomPois, parsePopulation } from './custom.js';
 import { loadNetwork, loadNodeTags, loadPois, loadBuildings, listAdminLevels, loadAdminAreas, geocode, clearMemoryCache, pingMirrors } from './overpass.js';
 import { buildGraph } from './graph.js';
 import { F_SIGNAL, F_ZEBRA, F_MARKED, F_GATE, F_BLOCKED } from './walkmodel.js';
@@ -10,7 +12,7 @@ import { setNetLogger } from './overpass.js';
 
 setLang(detectLang());
 import {
-  prepareCategories, isochroneReport, buildDemand, computeAnalysis, makeGridGroups,
+  prepareCategories, withVirtual, summarizeResult, isochroneReport, buildDemand, computeAnalysis, makeGridGroups,
   CAT_BY_ID, districtsToCSV, analysisToGeoJSON, isochronesToGeoJSON, routeToPoi,
 } from './analysis.js';
 import { bboxAround, expandBBox, bboxSpanKm, geometryBBox } from './geo.js';
@@ -35,6 +37,7 @@ const state = {
   sort: { key: 'index', dir: 1 },
   metric: 'share',
   route: null,
+  custom: { pois: [], pop: null },
 };
 loadSavedParams();
 
@@ -58,7 +61,7 @@ L.control.layers(baseMaps, null, { position: 'topleft', collapsed: true }).addTo
 const isoGroup = L.layerGroup().addTo(map);
 const routeGroup = L.layerGroup().addTo(map);
 const areaLayers = {
-  cells: L.layerGroup(), districts: L.layerGroup(), zones: L.layerGroup(), poi: L.layerGroup(),
+  cells: L.layerGroup(), districts: L.layerGroup(), zones: L.layerGroup(), poi: L.layerGroup(), whatif: L.layerGroup(),
 };
 const areaRect = L.rectangle([[0, 0], [0, 0]], { color: '#52514e', weight: 1.5, dashArray: '6 5', fill: false, interactive: false });
 let originMarker = null;
@@ -120,10 +123,15 @@ function parseBands() {
 
 function activeCatIds() { return CATEGORIES.filter(c => state.active.has(c.id)).map(c => c.id); }
 
+let catsBound = false;
+const withCustom = pois => (state.custom.pois.length ? pois.concat(state.custom.pois) : pois);
+
 function buildCatsUI() {
-  $('#cats').innerHTML = CATEGORIES.map(c => `
+  $('#cats').innerHTML = CATEGORIES.filter(c => !c.custom || state.custom.pois.length).map(c => `
     <label class="cat"><input type="checkbox" data-cat="${c.id}" ${state.active.has(c.id) ? 'checked' : ''}>
       <span class="dot" style="background:${c.color}"></span>${esc(catLabel(c))}</label>`).join('');
+  if (catsBound) return;
+  catsBound = true;
   $('#cats').addEventListener('change', e => {
     const id = e.target.dataset.cat;
     if (!id) return;
@@ -152,6 +160,8 @@ $('#max-span').textContent = CONFIG.maxAnalysisSpanKm;
 
 function setTab(tab) {
   state.tab = tab;
+  if (tab !== 'area') map.getContainer().classList.remove('picking');
+  if (tab !== 'area' && state.area) state.area.whatif.armed = false;
   for (const b of document.querySelectorAll('.tabs button')) b.setAttribute('aria-selected', String(b.dataset.tab === tab));
   $('#tab-iso').hidden = tab !== 'iso';
   $('#tab-area').hidden = tab !== 'area';
@@ -251,7 +261,7 @@ async function runIsochrone(latlng, { fit = true } = {}) {
     setStatus(_('Строю граф и считаю изохроны…'), true);
     await tick();
     const g = getGraph(ways, nodeTags);
-    const prepared = prepareCategories(g, pois, CATEGORIES.map(c => c.id));
+    const prepared = prepareCategories(g, withCustom(pois), CATEGORIES.map(c => c.id));
     const tIso = performance.now();
     const report = isochroneReport(g, { lat: latlng.lat, lon: latlng.lng }, prepared, { bands, speedMps: speedMps() });
     if (report) logAdd(_('расчёт Дейкстры и контуров: {s} с; старт привязан к сети на {m} м', { s: ((performance.now() - tIso) / 1000).toFixed(2), m: Math.round(report.snapM) }));
@@ -446,6 +456,7 @@ async function pickDistricts(bbox, mode, signal) {
 
 async function runAnalysis() {
   const signal = startTask();
+  map.getContainer().classList.remove('picking');
   const btn = $('#run-area');
   btn.disabled = true;
   try {
@@ -460,18 +471,18 @@ async function runAnalysis() {
     setStatus(_('Строю граф пешеходной сети…'), true);
     await tick();
     const g = getGraph(ways, nodeTags);
-    const prepared = prepareCategories(g, pois, CATEGORIES.map(c => c.id));
+    const prepared = prepareCategories(g, withCustom(pois), CATEGORIES.map(c => c.id));
     logAdd(_('объекты привязаны к графу: ') + CATEGORIES.map(c => `${catShort(c)} ${prepared[c.id].items.length}`).join(', '));
     setStatus(_('Привязываю здания к сети…'), true);
     await tick();
-    let demand = buildDemand(g, { buildings, mode: weightMode, bbox });
+    let demand = buildDemand(g, { buildings, mode: weightMode, bbox, custom: state.custom.pop });
     let usedMode = weightMode;
-    if (!demand.n && weightMode === 'buildings') { demand = buildDemand(g, { mode: 'network', bbox }); usedMode = 'network'; }
+    if (!demand.n && weightMode !== 'network') { demand = buildDemand(g, { mode: 'network', bbox }); usedMode = 'network'; }
     if (!demand.n) throw new Error(_('В выбранной области нет пешеходной сети.'));
-    logAdd(_('точек спроса: {n} ({k})', { n: demand.n, k: usedMode === 'buildings' ? _('здания') : _('узлы сети') }));
+    logAdd(_('точек спроса: {n} ({k})', { n: demand.n, k: usedMode === 'buildings' ? _('здания') : usedMode === 'custom' ? _('ваши данные о населении') : _('узлы сети') }));
     const { groups, note } = await pickDistricts(bbox, $('#district-mode').value, signal);
     logAdd(_('районы: {n} ({note})', { n: groups.length, note }));
-    state.area = { ctx: { g, prepared, demand, groups, bbox, pois, note, clipped, usedMode }, result: null };
+    state.area = { ctx: { g, prepared, demand, groups, bbox, pois: withCustom(pois), note, clipped, usedMode }, result: null, whatif: { items: [], armed: false, cat: 'school' }, base: null };
     recomputeArea();
     setTab('area');
   } catch (e) { fail(e); } finally { btn.disabled = false; }
@@ -483,14 +494,117 @@ function recomputeArea() {
   const catIds = activeCatIds();
   if (!catIds.length) { setStatus(_('Выберите хотя бы одну категорию.'), false, true); return; }
   setStatus(_('Считаю доступность…'), true);
-  const { g, prepared, demand, groups, bbox } = a.ctx;
+  const { g, prepared: basePrepared, demand, groups, bbox } = a.ctx;
   const tA = performance.now();
-  a.result = computeAnalysis({ g, prepared, demand, groups, catIds, bands: parseBands(), speedMps: speedMps(), bbox });
+  const args = { g, demand, groups, catIds, bands: parseBands(), speedMps: speedMps(), bbox };
+  const sc = a.whatif.items.length ? withVirtual(g, basePrepared, a.whatif.items) : null;
+  a.base = sc ? summarizeResult(computeAnalysis({ ...args, prepared: basePrepared })) : null;
+  a.result = computeAnalysis({ ...args, prepared: sc ? sc.prepared : basePrepared });
   logAdd(_('расчёт доступности: {s} с; ячеек {c}, проблемных зон {z}', { s: ((performance.now() - tA) / 1000).toFixed(1), c: a.result.cells.length, z: a.result.zones.length }));
   renderArea();
   writeHash();
   const c = a.ctx;
   setStatus(_('Готово. Районы: {note}.', { note: c.note }) + (c.clipped ? ' ' + _('Область урезана до {km} км — сдвиньте карту для другого участка.', { km: CONFIG.maxAnalysisSpanKm }) : ''));
+}
+
+
+// ── сценарии «что если» ─────────────────────────────────────────────────────
+
+const signed = (x, d = 0) => (x > 0 ? '+' : x < 0 ? '−' : '±') + nf(Math.abs(x), d);
+const deltaCls = x => (x > 0.05 ? 'up' : x < -0.05 ? 'down' : '');
+
+function whatifHTML() {
+  const w = state.area.whatif, r = state.area.result;
+  const opts = CATEGORIES.filter(c => !c.custom || state.custom.pois.length)
+    .map(c => `<option value="${c.id}" ${w.cat === c.id ? 'selected' : ''}>${esc(catLabel(c))}</option>`).join('');
+  const items = w.items.map((it, i) => `<li><span><i class="dot" style="background:${CAT_BY_ID[it.cat].color}"></i> ${esc(catLabel(CAT_BY_ID[it.cat]))} · ${it.lat.toFixed(4)}, ${it.lon.toFixed(4)}</span><button type="button" class="ghost" data-wi-del="${i}" aria-label="${_('Убрать')}">✕</button></li>`).join('');
+  let delta = '';
+  const b = state.area.base;
+  if (b && w.items.length) {
+    const cur = summarizeResult(r);
+    const di = (cur.index ?? 0) - (b.index ?? 0), dz = cur.zones - b.zones;
+    const rows = r.catIds.map(id => {
+      const d = cur.cats[id].share - (b.cats[id]?.share ?? 0);
+      return `<tr><td>${esc(catLabel(CAT_BY_ID[id]))}</td><td>${nf(b.cats[id]?.share ?? 0, 0)}%</td><td>${nf(cur.cats[id].share, 0)}%</td><td class="${deltaCls(d)}">${signed(d)} ${_('п.п.')}</td></tr>`;
+    }).join('');
+    delta = `<div class="tiles wi-tiles">
+        <div class="tile"><b class="${deltaCls(di)}">${signed(di, 1)}</b><span>${_('индекс: {a} → {b}', { a: nf(b.index ?? 0, 0), b: nf(cur.index ?? 0, 0) })}</span></div>
+        <div class="tile"><b class="${deltaCls(-dz)}">${signed(dz)}</b><span>${_('проблемных зон: {a} → {b}', { a: b.zones, b: cur.zones })}</span></div>
+      </div>
+      <div class="tbl-wrap"><table><thead><tr><th>${_('Доля жителей ≤ {b} мин', { b: cur.maxBand })}</th><th>${_('было')}</th><th>${_('стало')}</th><th>Δ</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  }
+  return `<div class="h3">${_('Что если…')}</div>
+    <div class="whatif">
+      <div class="row2"><select id="wi-cat" aria-label="${_('Категория объекта')}">${opts}</select>
+        <button type="button" id="wi-arm" class="${w.armed ? 'primary' : 'ghost'}" aria-pressed="${w.armed}">${w.armed ? _('Кликните по карте…') : _('Поставить на карте')}</button></div>
+      ${items ? `<ul class="wi-list">${items}</ul><button type="button" id="wi-reset" class="ghost">${_('Сбросить сценарий')}</button>` : `<p class="hint">${_('Добавьте гипотетические школу, больницу или парк и посмотрите, как изменится доступность.')}</p>`}
+      ${delta}
+    </div>`;
+}
+
+function renderWhatifMarkers() {
+  areaLayers.whatif.clearLayers();
+  for (const it of state.area?.whatif.items || []) {
+    const c = CAT_BY_ID[it.cat];
+    L.marker([it.lat, it.lon], { pane: 'poi', interactive: false, icon: L.divIcon({ className: '', html: `<div class="wi-pin" style="border-color:${c.color};color:${c.color}">${c.glyph}</div>`, iconSize: [24, 24], iconAnchor: [12, 12] }) })
+      .addTo(areaLayers.whatif);
+  }
+}
+
+function setWhatifArmed(on) {
+  if (!state.area) return;
+  state.area.whatif.armed = on;
+  map.getContainer().classList.toggle('picking', on);
+}
+
+function whatifAdd(latlng) {
+  const w = state.area.whatif;
+  w.items.push({ cat: w.cat, lat: latlng.lat, lon: latlng.lng });
+  state.active.add(w.cat);
+  const box = document.querySelector(`#cats input[data-cat="${w.cat}"]`); if (box) box.checked = true;
+  setWhatifArmed(false);
+  recomputeArea();
+}
+
+// ── сохранённые расчёты ─────────────────────────────────────────────────────
+
+function savedHTML() {
+  const list = loadSaved();
+  const cur = summarizeResult(state.area.result);
+  const ids = state.area.result.catIds;
+  const defName = `${nf(state.area.ctx.bbox[1] / 2 + state.area.ctx.bbox[3] / 2, 3)}, ${nf(state.area.ctx.bbox[0] / 2 + state.area.ctx.bbox[2] / 2, 3)} · ${nf(state.speedKmh, 1)} ${_('км/ч')}`;
+  const row = (name, sm, extra = '', cls = '') => `<tr class="${cls}"><td>${esc(name)}</td><td>${sm.index == null ? '—' : nf(sm.index, 0)}</td><td>${sm.zones}</td>${ids.map(id => `<td>${sm.cats[id] ? nf(sm.cats[id].share, 0) + '%' : '—'}</td>`).join('')}<td>${extra}</td></tr>`;
+  const body = row(_('текущий'), cur, '', 'cur') + list.map(e => row(e.name, e.summary, `<button type="button" class="ghost" data-sv-del="${esc(e.id)}" aria-label="${_('Удалить')}">✕</button>`)).join('');
+  return `<div class="h3">${_('Сохранённые расчёты')}</div>
+    <div class="row2"><input id="sv-name" type="text" value="${esc(defName)}" aria-label="${_('Название расчёта')}"><button type="button" id="sv-add" class="ghost">${_('Сохранить')}</button></div>
+    <div class="tbl-wrap"><table class="saved"><thead><tr><th>${_('Расчёт')}</th><th>${_('Индекс')}</th><th>${_('Зон')}</th>${ids.map(id => `<th>${esc(catShort(CAT_BY_ID[id]))}, %</th>`).join('')}<th></th></tr></thead><tbody>${body}</tbody></table></div>
+    <p class="hint">${_('Доли — жителей в пределах {b} мин. Расчёты хранятся в этом браузере; сравнивайте при одинаковой скорости и категориях.', { b: cur.maxBand })}</p>
+    ${list.length ? `<div class="actions"><button id="sv-csv" class="ghost">${_('Сравнение в CSV')}</button><button id="sv-clear" class="ghost">${_('Очистить список')}</button></div>` : ''}`;
+}
+
+function saveCurrent() {
+  const a = state.area;
+  addSaved({
+    name: ($('#sv-name').value || '').trim() || _('Расчёт'), ts: Date.now(), speedKmh: state.speedKmh,
+    bands: a.result.bands, mode: a.ctx.usedMode, scenario: a.whatif.items.length, summary: summarizeResult(a.result),
+  });
+  renderArea();
+}
+
+function areaClickExtra(e) {
+  const t = e.target;
+  if (t.id === 'wi-arm') { setWhatifArmed(!state.area.whatif.armed); renderArea(); return true; }
+  if (t.id === 'wi-reset') { state.area.whatif.items = []; setWhatifArmed(false); recomputeArea(); return true; }
+  if (t.dataset.wiDel != null) { state.area.whatif.items.splice(Number(t.dataset.wiDel), 1); recomputeArea(); return true; }
+  if (t.id === 'sv-add') { saveCurrent(); return true; }
+  if (t.dataset.svDel) { removeSaved(t.dataset.svDel); renderArea(); return true; }
+  if (t.id === 'sv-clear') { clearSaved(); renderArea(); return true; }
+  if (t.id === 'sv-csv') {
+    const labels = Object.fromEntries(CATEGORIES.map(c => [c.id, catLabel(c)]));
+    download('comparison.csv', savedToCSV(loadSaved(), labels, { name: _('Расчёт'), date: _('Дата'), speed: _('Скорость, км/ч'), index: _('Индекс'), zones: _('Зон'), share: _('% жителей') }), 'text/csv;charset=utf-8');
+    return true;
+  }
+  return false;
 }
 
 function renderArea() {
@@ -511,20 +625,23 @@ function renderArea() {
     <div class="tiles">
       <div class="tile"><b>${tot.index == null ? '—' : nf(tot.index, 0)}</b><span>${_('индекс доступности, 0–100')}</span></div>
       <div class="tile"><b>${result.zones.length}</b><span>${_('проблемных зон')}</span></div>
-      <div class="tile"><b>${nf(result.demand.n, 0)}</b><span>${ctx.usedMode === 'buildings' ? _('зданий в расчёте') : _('узлов сети в расчёте')}</span></div>
+      <div class="tile"><b>${nf(result.demand.n, 0)}</b><span>${ctx.usedMode === 'buildings' ? _('зданий в расчёте') : ctx.usedMode === 'custom' ? _('ваших точек в расчёте') : _('узлов сети в расчёте')}</span></div>
     </div>
     <div class="h3">${_('Доля жителей в пределах {b} мин пешком', { b: maxBand })}</div>
     <div class="sharebars">${bars}</div>
     <div class="h3">${_('Проблемные зоны')}</div>
     ${zones ? `<ul class="zones">${zones}</ul>` : `<p class="hint">${_('Зон с индексом ниже {n} не найдено.', { n: CONFIG.index.problemBelow })}</p>`}
+    ${whatifHTML()}
     <div class="h3">${_('Сравнение районов')}
       <select id="metric" aria-label="${_('Показатель')}"><option value="share" ${state.metric === 'share' ? 'selected' : ''}>${_('Доля ≤ {b} мин, %', { b: maxBand })}</option><option value="median" ${state.metric === 'median' ? 'selected' : ''}>${_('Медиана, мин')}</option></select>
     </div>
     <div class="tbl-wrap" id="dist-table"></div>
-    <p class="hint">${_('Индекс: 100 баллов при ≤ {best} мин до объекта, 0 при ≥ {worst} мин, между ними линейно; среднее по выбранным категориям, взвешено по {w}. Это прокси, а не перепись населения.', { best: CONFIG.index.bestMin, worst: CONFIG.index.worstMin, w: ctx.usedMode === 'buildings' ? _('этажности зданий') : _('длине улиц') })}</p>
-    <div class="actions"><button id="area-csv" class="ghost">${_('Скачать CSV')}</button><button id="area-geojson" class="ghost">${_('Скачать GeoJSON')}</button></div>`;
+    <p class="hint">${_('Индекс: 100 баллов при ≤ {best} мин до объекта, 0 при ≥ {worst} мин, между ними линейно; среднее по выбранным категориям, взвешено по {w}. Это прокси, а не перепись населения.', { best: CONFIG.index.bestMin, worst: CONFIG.index.worstMin, w: ctx.usedMode === 'buildings' ? _('этажности зданий') : ctx.usedMode === 'custom' ? _('вашим данным о населении') : _('длине улиц') })}</p>
+    <div class="actions"><button id="area-csv" class="ghost">${_('Скачать CSV')}</button><button id="area-geojson" class="ghost">${_('Скачать GeoJSON')}</button></div>
+    ${savedHTML()}`;
   renderDistrictTable();
   buildAreaLayers();
+  renderWhatifMarkers();
   if (state.tab === 'area') attachAreaLayers();
   renderAreaLegend();
   $('#layers').hidden = false;
@@ -557,6 +674,7 @@ function renderDistrictTable() {
 }
 
 $('#area-result').addEventListener('click', e => {
+  if (state.area && areaClickExtra(e)) return;
   const th = e.target.closest('th[data-sort]');
   if (th) {
     const k = th.dataset.sort;
@@ -579,6 +697,7 @@ $('#area-result').addEventListener('click', e => {
   if (e.target.id === 'area-geojson') download('accessibility.geojson', JSON.stringify(analysisToGeoJSON(state.area.result)), 'application/geo+json');
 });
 $('#area-result').addEventListener('change', e => {
+  if (e.target.id === 'wi-cat') { state.area.whatif.cat = e.target.value; return; }
   if (e.target.id === 'metric') { state.metric = e.target.value; renderDistrictTable(); }
 });
 $('#area-result').addEventListener('keydown', e => {
@@ -669,7 +788,10 @@ function download(name, text, type) {
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
-map.on('click', e => { if (state.tab === 'iso') runIsochrone(e.latlng); });
+map.on('click', e => {
+  if (state.tab === 'iso') runIsochrone(e.latlng);
+  else if (state.tab === 'area' && state.area?.whatif.armed) whatifAdd(e.latlng);
+});
 
 // ── расчёт из любой точки по кнопке ──────────────────────────────────────────
 
@@ -741,6 +863,15 @@ function currentHash() {
 function writeHash() { try { history.replaceState(null, '', '#' + currentHash()); } catch { /* file:// и т. п. */ } }
 map.on('moveend', () => { clearTimeout(writeHash.t); writeHash.t = setTimeout(writeHash, 400); });
 $('#bands').addEventListener('change', writeHash);
+function fillPrintHead() {
+  const c = map.getCenter();
+  const what = state.tab === 'area' ? _('Анализ области') : _('Изохроны из точки');
+  $('#print-head').innerHTML = `<b>City Accessibility</b> — ${esc(what)} · ${new Date().toLocaleDateString(getLang() === 'en' ? 'en-GB' : 'ru-RU')}<br>${_('Скорость {v} км/ч; пороги {b} мин; центр карты {p}', { v: nf(state.speedKmh, 1), b: parseBands().join('/'), p: `${c.lat.toFixed(4)}, ${c.lng.toFixed(4)}` })}<br>${_('Данные © участники OpenStreetMap (ODbL). Время — модель, не измерение.')}`;
+}
+window.addEventListener('beforeprint', () => { fillPrintHead(); map.invalidateSize(); });
+window.addEventListener('afterprint', () => map.invalidateSize());
+$('#print').addEventListener('click', () => { fillPrintHead(); map.invalidateSize(); setTimeout(() => window.print(), 150); });
+
 $('#share').addEventListener('click', async () => {
   writeHash();
   const url = location.href;
@@ -824,3 +955,63 @@ $('#lang').addEventListener('click', () => {
 });
 restoreFromHash();
 buildCatsUI();
+
+// ── свои данные ─────────────────────────────────────────────────────────────
+
+function refreshOwnUI() {
+  const { pois, pop } = state.custom;
+  const parts = [];
+  if (pois.length) parts.push(_('объектов: {n}', { n: pois.length }));
+  if (pop) parts.push(_('точек населения: {n}, всего {t}', { n: pop.length, t: nf(pop.reduce((a, b) => a + b.w, 0), 0) }));
+  $('#own-status').textContent = parts.join('; ');
+  $('#own-clear').hidden = !parts.length;
+  $('#opt-custom').hidden = !pop;
+  if (!pop && $('#weight-mode').value === 'custom') $('#weight-mode').value = 'buildings';
+  buildCatsUI();
+}
+
+async function readGeoJSON(file) {
+  try { return JSON.parse(await file.text()); }
+  catch { throw new Error(_('Не удалось прочитать файл как GeoJSON.')); }
+}
+
+function applyOwnChange() {
+  refreshOwnUI();
+  if (state.tab === 'iso' && state.origin) runIsochrone(state.origin, { fit: false });
+  else if (state.tab === 'area' && state.area) runAnalysis();
+}
+
+$('#file-pois').addEventListener('change', async e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  try {
+    const { pois, skipped } = parseCustomPois(await readGeoJSON(f));
+    if (!pois.length) throw new Error(_('В файле нет точек или полигонов.'));
+    state.custom.pois = pois;
+    state.active.add('custom');
+    setStatus(_('Загружено объектов: {n}{s}', { n: pois.length, s: skipped ? _(' (пропущено: {k})', { k: skipped }) : '' }));
+    applyOwnChange();
+  } catch (err) { fail(err); }
+  e.target.value = '';
+});
+
+$('#file-pop').addEventListener('change', async e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  try {
+    const { pts, skipped } = parsePopulation(await readGeoJSON(f));
+    if (!pts.length) throw new Error(_('В файле нет точек или полигонов.'));
+    state.custom.pop = pts;
+    $('#weight-mode').value = 'custom';
+    setStatus(_('Загружено точек населения: {n}{s}', { n: pts.length, s: skipped ? _(' (пропущено: {k})', { k: skipped }) : '' }));
+    refreshOwnUI();
+    if (state.tab === 'area' && state.area) runAnalysis();
+  } catch (err) { fail(err); }
+  e.target.value = '';
+});
+
+$('#own-clear').addEventListener('click', () => {
+  state.custom = { pois: [], pop: null };
+  state.active.delete('custom');
+  applyOwnChange();
+});
