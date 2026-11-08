@@ -1,29 +1,41 @@
 // Пешеходный граф из ответа Overpass (out geom) + алгоритм Дейкстры.
-// Стоимость рёбер хранится в «эффективных метрах» (длина × штраф за тип пути);
-// время = стоимость / скорость.
+//
+// Стоимость ребра — «эффективные метры» (длина × множитель типа пути/покрытия/уклона);
+// время ребра = стоимость / скорость.
+//
+// Перекрёстки. Дорога в графе — осевая линия, но ходят по тротуару, поэтому состояние
+// пешехода — (дуга, сторона дороги: справа/слева по ходу). Каждый узел с ветвлением
+// моделируется «кольцом» концов тротуаров: у каждой ветки есть левый и правый конец,
+// соседние ветки соединены углом (бесплатно), а чтобы попасть с одного конца ветки на
+// другой, нужно перейти эту дорогу (ожидание зависит от класса дороги и светофора).
+// Так «сами собой» получаются правила: прямо = перейти боковую улицу на своей стороне,
+// на Т-образном перекрёстке с противоположной стороны переходить не нужно, поворот
+// «налево» требует перехода, крупная дорога без переходов — барьер.
 
 import { haversine } from './geo.js';
+import { WALK } from './config.js';
+import { wayModel, nodeFlags, crossWait, F_GATE, F_BLOCKED } from './walkmodel.js';
 
 export function buildGraph(ways, opts = {}) {
   const maxSeg = opts.maxSegmentM ?? 40;
-  const stepsPen = opts.stepsPenalty ?? 1.5;
   const minComp = opts.minComponentNodes ?? 25;
+  const nodeTags = opts.nodeTags; // Map(osmNodeId → теги) или undefined
 
   const idMap = new Map();
   const lat = [], lon = [];
-  const eFrom = [], eTo = [], eCost = [];
+  const eFrom = [], eTo = [], eCost = [], eCls = [], eLanes = [];
 
   const nodeFor = (id, la, lo) => {
     let i = idMap.get(id);
     if (i === undefined) { i = lat.length; idMap.set(id, i); lat.push(la); lon.push(lo); }
     return i;
   };
-  const addEdge = (a, b, c) => { eFrom.push(a); eTo.push(b); eCost.push(c); };
+  const addEdge = (a, b, c, cls, lanes) => { eFrom.push(a); eTo.push(b); eCost.push(c); eCls.push(cls); eLanes.push(lanes); };
 
   for (const w of ways) {
     const geom = w.geometry, ids = w.nodes;
     if (!geom || !ids || geom.length < 2) continue;
-    const pen = w.tags && w.tags.highway === 'steps' ? stepsPen : 1;
+    const { rank, lanes, factor: pen } = wayModel(w.tags);
     for (let k = 0; k < geom.length - 1; k++) {
       const p = geom[k], q = geom[k + 1];
       if (!p || !q) continue;
@@ -38,28 +50,80 @@ export function buildGraph(ways, opts = {}) {
         const mid = lat.length;
         lat.push(p.lat + (q.lat - p.lat) * t);
         lon.push(p.lon + (q.lon - p.lon) * t);
-        addEdge(prev, mid, (d / parts) * pen);
+        addEdge(prev, mid, (d / parts) * pen, rank, lanes);
         prev = mid;
       }
-      addEdge(prev, b, (d / parts) * pen);
+      addEdge(prev, b, (d / parts) * pen, rank, lanes);
     }
   }
 
   const n = lat.length;
   const m = eFrom.length;
 
-  // CSR (неориентированный граф)
+  // CSR (неориентированный граф): каждая дуга хранит класс дороги, полосы и азимут
   const deg = new Int32Array(n + 1);
   for (let i = 0; i < m; i++) { deg[eFrom[i] + 1]++; deg[eTo[i] + 1]++; }
   for (let i = 0; i < n; i++) deg[i + 1] += deg[i];
   const adjStart = deg;
   const fill = new Int32Array(n);
-  const adjTo = new Int32Array(2 * m);
-  const adjCost = new Float32Array(2 * m);
+  const A = 2 * m;
+  const adjTo = new Int32Array(A);
+  const adjCost = new Float32Array(A);
+  const arcFrom = new Int32Array(A);
+  const arcRev = new Int32Array(A);
+  const arcCls = new Uint8Array(A);
+  const arcLanes = new Uint8Array(A);
+  const arcBearing = new Float32Array(A);
+  const bearing = (a, b) => ((Math.atan2((lon[b] - lon[a]) * Math.cos(lat[a] * Math.PI / 180), lat[b] - lat[a]) * 180 / Math.PI) + 360) % 360;
   for (let i = 0; i < m; i++) {
     const a = eFrom[i], b = eTo[i], c = eCost[i];
-    let p = adjStart[a] + fill[a]++; adjTo[p] = b; adjCost[p] = c;
-    p = adjStart[b] + fill[b]++; adjTo[p] = a; adjCost[p] = c;
+    const p = adjStart[a] + fill[a]++;
+    const q = adjStart[b] + fill[b]++;
+    adjTo[p] = b; adjCost[p] = c; arcFrom[p] = a; arcCls[p] = eCls[i]; arcLanes[p] = eLanes[i]; arcBearing[p] = bearing(a, b); arcRev[p] = q;
+    adjTo[q] = a; adjCost[q] = c; arcFrom[q] = b; arcCls[q] = eCls[i]; arcLanes[q] = eLanes[i]; arcBearing[q] = bearing(b, a); arcRev[q] = p;
+  }
+
+  // Флаги узлов (светофоры, переходы, калитки)
+  const flags = new Uint8Array(n);
+  if (nodeTags) {
+    for (const [id, tags] of nodeTags) {
+      const i = idMap.get(id);
+      if (i !== undefined) flags[i] = nodeFlags(tags);
+    }
+  }
+
+  // «Кольца» перекрёстков: для узлов с ветвлением, тупиков и узлов с флагами
+  const special = new Uint8Array(n);
+  const jStart = new Int32Array(n);
+  const legIdx = new Uint8Array(A);   // порядковый номер ветки (по часовой) в узле
+  const nodeRank = new Uint8Array(n); // максимальный класс дороги в узле
+  let jSize = 0;
+  for (let v = 0; v < n; v++) {
+    const k = adjStart[v + 1] - adjStart[v];
+    for (let e = adjStart[v]; e < adjStart[v + 1]; e++) if (arcCls[e] > nodeRank[v]) nodeRank[v] = arcCls[e];
+    if (k !== 2 || flags[v]) { special[v] = 1; jStart[v] = jSize; jSize += (2 * k) * (2 * k); }
+  }
+  const jMat = new Float32Array(jSize);
+  for (let v = 0; v < n; v++) {
+    if (!special[v]) continue;
+    const lo = adjStart[v], k = adjStart[v + 1] - lo, dim = 2 * k;
+    const order = Array.from({ length: k }, (_, i) => lo + i).sort((x, y) => arcBearing[x] - arcBearing[y]);
+    order.forEach((e, idx) => { legIdx[e] = idx; });
+    const M = new Float64Array(dim * dim).fill(Infinity);
+    const L = i => 2 * i, R = i => 2 * i + 1;
+    for (let i = 0; i < dim; i++) M[i * dim + i] = 0;
+    const link = (x, y, c) => { if (c < M[x * dim + y]) { M[x * dim + y] = c; M[y * dim + x] = c; } };
+    for (let i = 0; i < k; i++) {
+      link(R(i), L((i + 1) % k), 0); // угол между соседними ветками
+      const e = order[i];
+      link(L(i), R(i), arcCls[e] ? crossWait(flags[v], arcCls[e], arcLanes[e]) : 0); // переход через ветку
+    }
+    for (let q = 0; q < dim; q++) for (let x = 0; x < dim; x++) {
+      const mx = M[x * dim + q];
+      if (mx === Infinity) continue;
+      for (let y = 0; y < dim; y++) { const c = mx + M[q * dim + y]; if (c < M[x * dim + y]) M[x * dim + y] = c; }
+    }
+    jMat.set(M, jStart[v]);
   }
 
   // Компоненты связности
@@ -90,7 +154,7 @@ export function buildGraph(ways, opts = {}) {
   const g = {
     n, edges: m, validCount,
     lat: Float64Array.from(lat), lon: Float64Array.from(lon),
-    adjStart, adjTo, adjCost, valid,
+    adjStart, adjTo, adjCost, arcFrom, arcRev, arcCls, arcLanes, arcBearing, nodeFlags: flags, nodeRank, special, jStart, jMat, legIdx, valid,
     lengthKm: totalCost / 1000,
   };
   g.index = buildSpatialIndex(g);
@@ -188,26 +252,71 @@ class MinHeap {
   }
 }
 
+/** Ожидаемая «потеря» на конечной точке, привязанной к крупной дороге: объект может оказаться на другой стороне. */
+export function endpointPenalty(g, node) {
+  const r = g.nodeRank[node];
+  return r >= 3 ? 0.25 * WALK.unmarkedWait[r] : 0;
+}
+
 /**
- * @param sources [{node, cost0}] — начальные узлы и стартовая стоимость
- * @param maxCost предел стоимости (эффективные метры)
- * @returns Float64Array стоимостей (Infinity — недостижимо)
+ * Дейкстра по состояниям (дуга, сторона дороги). Учитывает ожидание на переходах.
+ * @param sources [{node, cost0}] — начальные узлы; cost0 в секундах
+ * @param maxSec  предел времени, с
+ * @param speedMps скорость пешехода, м/с
+ * @returns Float64Array времени прибытия в узел, с (Infinity — недостижим)
  */
-export function dijkstra(g, sources, maxCost = Infinity) {
-  const dist = new Float64Array(g.n).fill(Infinity);
+export function dijkstra(g, sources, maxSec = Infinity, speedMps = 4.8 / 3.6) {
+  const { n, adjStart, adjTo, adjCost, arcFrom, arcRev, arcCls, special, jStart, jMat, legIdx, nodeFlags: flags } = g;
+  const inv = 1 / speedMps;
+  const midBlock = WALK.unmarkedWait;
+  const dist = new Float64Array(adjTo.length * 2).fill(Infinity); // состояние = дуга*2 + сторона (0 — справа по ходу)
+  const nodeDist = new Float64Array(n).fill(Infinity);
   const heap = new MinHeap();
+  const relax = (st, nd) => { if (nd <= maxSec && nd < dist[st]) { dist[st] = nd; heap.push(nd, st); } };
+
   for (const s of sources) {
-    if (s.cost0 <= maxCost && s.cost0 < dist[s.node]) { dist[s.node] = s.cost0; heap.push(s.cost0, s.node); }
-  }
-  const { adjStart, adjTo, adjCost } = g;
-  while (heap.size) {
-    const v = heap.pop();
-    const d = heap.popped;
-    if (d > dist[v]) continue;
-    for (let e = adjStart[v]; e < adjStart[v + 1]; e++) {
-      const nd = d + adjCost[e];
-      if (nd <= maxCost && nd < dist[adjTo[e]]) { dist[adjTo[e]] = nd; heap.push(nd, adjTo[e]); }
+    if (s.cost0 > maxSec) continue;
+    if (s.cost0 < nodeDist[s.node]) nodeDist[s.node] = s.cost0;
+    for (let e = adjStart[s.node]; e < adjStart[s.node + 1]; e++) {
+      const t = s.cost0 + adjCost[e] * inv;
+      relax(2 * e, t);
+      if (arcCls[e]) relax(2 * e + 1, t);
     }
   }
-  return dist;
+
+  while (heap.size) {
+    const st = heap.pop();
+    const d = heap.popped;
+    if (d > dist[st]) continue;
+    const a = st >> 1, side = st & 1, v = adjTo[a];
+    if (d < nodeDist[v]) nodeDist[v] = d;
+    const lo = adjStart[v], hi = adjStart[v + 1];
+
+    if (!special[v]) {
+      // обычный узел степени 2: идём дальше по той же стороне
+      const b = lo === arcRev[a] ? lo + 1 : lo;
+      const nd = d + adjCost[b] * inv;
+      relax(2 * b + (arcCls[b] ? side : 0), nd);
+      // на небольших улицах можно перейти дорогу где угодно
+      const c = arcCls[a];
+      if (c && c <= 2 && arcCls[b]) relax(2 * b + (1 - side), nd + midBlock[c]);
+      continue;
+    }
+
+    const fl = flags[v];
+    if (fl & F_BLOCKED) continue;
+    const gate = fl & F_GATE ? WALK.gateDelay : 0;
+    const dim = 2 * (hi - lo), M = jStart[v];
+    // конец тротуара, на котором мы подошли: справа по ходу = левый конец обратной ветки
+    const rev = arcRev[a], kr = legIdx[rev];
+    const arrive = arcCls[a] ? (side === 0 ? 2 * kr : 2 * kr + 1) : 2 * kr + 1;
+    for (let b = lo; b < hi; b++) {
+      const kb = legIdx[b];
+      const base = d + gate + adjCost[b] * inv;
+      // уходим по правой стороне ветки (правый конец) или по левой
+      relax(2 * b, base + jMat[M + arrive * dim + 2 * kb + 1]);
+      if (arcCls[b]) relax(2 * b + 1, base + jMat[M + arrive * dim + 2 * kb]);
+    }
+  }
+  return nodeDist;
 }

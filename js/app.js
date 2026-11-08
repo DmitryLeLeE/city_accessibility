@@ -1,5 +1,5 @@
 import { CONFIG, CATEGORIES, BAND_COLORS, INDEX_STEPS, PROBLEM_COLOR } from './config.js';
-import { loadNetwork, loadPois, loadBuildings, listAdminLevels, loadAdminAreas, geocode } from './overpass.js';
+import { loadNetwork, loadNodeTags, loadPois, loadBuildings, listAdminLevels, loadAdminAreas, geocode } from './overpass.js';
 import { buildGraph } from './graph.js';
 import {
   prepareCategories, isochroneReport, buildDemand, computeAnalysis, makeGridGroups,
@@ -156,15 +156,16 @@ $('#search').addEventListener('submit', async e => {
 async function loadAll(bbox, signal, buildingsBBox) {
   const prog = label => (d, t) => setStatus(`${label}: ${d} из ${t} фрагментов…`, true);
   const ways = await loadNetwork(bbox, { signal, onProgress: prog('Пешеходная сеть') });
+  const nodeTags = await loadNodeTags(bbox, { signal, onProgress: prog('Светофоры и переходы') });
   const pois = await loadPois(bbox, { signal, onProgress: prog('Школы, больницы, парки') });
   const buildings = buildingsBBox ? await loadBuildings(buildingsBBox, { signal, onProgress: prog('Здания') }) : null;
-  return { ways, pois, buildings };
+  return { ways, nodeTags, pois, buildings };
 }
 
-function getGraph(ways) {
-  const sig = `${ways.length}:${ways[0]?.id}:${ways[ways.length - 1]?.id}`;
+function getGraph(ways, nodeTags) {
+  const sig = `${ways.length}:${ways[0]?.id}:${ways[ways.length - 1]?.id}:${nodeTags.size}`;
   if (state.graph?.sig === sig) return state.graph.g;
-  const g = buildGraph(ways, CONFIG.graph);
+  const g = buildGraph(ways, { ...CONFIG.graph, nodeTags });
   state.graph = { sig, g };
   return g;
 }
@@ -181,11 +182,11 @@ async function runIsochrone(latlng, { fit = true } = {}) {
   placeOrigin(latlng);
   try {
     setStatus('Загружаю данные OpenStreetMap…', true);
-    const { ways, pois } = await loadAll(bbox, signal);
+    const { ways, nodeTags, pois } = await loadAll(bbox, signal);
     if (!ways.length) throw new Error('В этой области нет данных о дорогах и тропинках.');
     setStatus('Строю граф и считаю изохроны…', true);
     await tick();
-    const g = getGraph(ways);
+    const g = getGraph(ways, nodeTags);
     const prepared = prepareCategories(g, pois, CATEGORIES.map(c => c.id));
     const report = isochroneReport(g, { lat: latlng.lat, lon: latlng.lng }, prepared, { bands, speedMps: speedMps() });
     if (!report) throw new Error(`Рядом с точкой нет пешеходной сети (ближе ${CONFIG.snap.originM} м). Выберите точку у улицы.`);
@@ -261,7 +262,7 @@ function renderIso() {
     <div class="chips">${chips}</div>
     <div class="tbl-wrap"><table><thead><tr><th>Объектов в зоне</th>${bands.map(b => `<th>≤ ${b} мин</th>`).join('')}<th>Ближайший</th></tr></thead><tbody>${rows || '<tr><td colspan="9" class="muted">Выберите категории выше</td></tr>'}</tbody></table></div>
     ${details}
-    <p class="hint">Старт привязан к ближайшей улице (${Math.round(report.snapM)} м). Скорость ${nf(state.speedKmh, 1)} км/ч, лестницы медленнее.</p>`;
+    <p class="hint">Старт привязан к ближайшей улице (${Math.round(report.snapM)} м). Скорость ${nf(state.speedKmh, 1)} км/ч, лестницы, покрытие и ожидание на переходах учтены.</p>`;
   $('#iso-actions').hidden = false;
   renderIsoLegend();
 }
@@ -338,11 +339,11 @@ async function runAnalysis() {
     const padM = CONFIG.index.worstMin * 60 * speedMps();
     const big = expandBBox(bbox, padM);
     const weightMode = $('#weight-mode').value;
-    const { ways, pois, buildings } = await loadAll(big, signal, weightMode === 'buildings' ? bbox : null);
+    const { ways, nodeTags, pois, buildings } = await loadAll(big, signal, weightMode === 'buildings' ? bbox : null);
     if (!ways.length) throw new Error('В этой области нет данных о дорогах и тропинках.');
     setStatus('Строю граф пешеходной сети…', true);
     await tick();
-    const g = getGraph(ways);
+    const g = getGraph(ways, nodeTags);
     const prepared = prepareCategories(g, pois, CATEGORIES.map(c => c.id));
     setStatus('Привязываю здания к сети…', true);
     await tick();

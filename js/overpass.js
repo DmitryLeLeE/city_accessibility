@@ -94,16 +94,39 @@ way["highway"]
   ["foot"!~"^(no|private)$"]["access"!~"^(private|no)$"]["motorroad"!="yes"]["area"!="yes"](${bb});
 out geom;`;
 
+const WAY_TAGS = ['highway', 'service', 'sidewalk', 'sidewalk:both', 'sidewalk:left', 'sidewalk:right', 'surface', 'smoothness', 'incline', 'lanes'];
+const pick = (tags = {}, keys) => { const o = {}; for (const k of keys) if (tags[k] != null) o[k] = tags[k]; return o; };
+
 export async function loadNetwork(bbox, opts) {
   const parts = await loadKind('net', bbox, async (tile, signal) => {
     const json = await runOverpass(NETWORK_QUERY(bboxStr(tile.bbox)), { signal });
     return json.elements
       .filter(el => el.type === 'way' && el.geometry)
-      .map(el => ({ id: el.id, nodes: el.nodes, geometry: el.geometry, tags: { highway: el.tags?.highway } }));
+      .map(el => ({ id: el.id, nodes: el.nodes, geometry: el.geometry, tags: pick(el.tags, WAY_TAGS) }));
   }, opts);
   const seen = new Map();
   for (const part of parts) for (const w of part) if (!seen.has(w.id)) seen.set(w.id, w);
   return [...seen.values()];
+}
+
+// ── теги узлов: светофоры, переходы, калитки ────────────────────────────────
+
+const NODE_QUERY = bb => `[out:json][timeout:90];
+(
+  node["highway"~"^(crossing|traffic_signals)$"](${bb});
+  node["crossing"](${bb});
+  node["barrier"~"^(gate|lift_gate|swing_gate|turnstile|stile|kissing_gate|toll_booth|chain|cycle_barrier)$"](${bb});
+);
+out tags;`;
+const NODE_TAGS = ['highway', 'crossing', 'crossing:signals', 'crossing:markings', 'crossing_ref', 'barrier', 'access', 'foot'];
+
+/** @returns Map(osmNodeId → теги) */
+export async function loadNodeTags(bbox, opts) {
+  const parts = await loadKind('nodes', bbox, async (tile, signal) => {
+    const json = await runOverpass(NODE_QUERY(bboxStr(tile.bbox)), { signal });
+    return json.elements.filter(el => el.type === 'node').map(el => [el.id, pick(el.tags, NODE_TAGS)]);
+  }, opts);
+  return new Map(parts.flat());
 }
 
 // ── объекты (POI) ───────────────────────────────────────────────────────────

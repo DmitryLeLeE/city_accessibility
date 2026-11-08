@@ -2,7 +2,7 @@
 // статистика по районам, отчёт по изохронам.
 
 import { CONFIG, CATEGORIES } from './config.js';
-import { dijkstra } from './graph.js';
+import { dijkstra, endpointPenalty } from './graph.js';
 import { isochroneGeometry, gridToMultiPolygon } from './isochrone.js';
 import { makeProjector, pointInGeometry, geometryBBox } from './geo.js';
 
@@ -22,14 +22,21 @@ export function prepareCategories(g, pois, catIds, snapM = CONFIG.snap.poiM) {
     }
     if (!ent.length) continue;
     slot.items.push({ poi, ent });
-    for (const e of ent) slot.sources.push({ node: e.node, cost0: e.snapM });
+    for (const e of ent) slot.sources.push({ node: e.node, snapM: e.snapM });
   }
   return prepared;
 }
 
-const poiCost = (item, dist) => {
+/**
+ * Время «от точки до сети» (по дворам, медленнее) плюс ожидаемая потеря, если точка
+ * привязана к крупной дороге и может оказаться на её другой стороне. Секунды.
+ */
+const endSec = (g, node, snapM, speedMps) => (snapM * CONFIG.snap.offNetworkFactor) / speedMps + endpointPenalty(g, node);
+const toSources = (g, slot, speedMps) => (slot?.sources || []).map(s => ({ node: s.node, cost0: endSec(g, s.node, s.snapM, speedMps) }));
+
+const poiSeconds = (g, item, dist, speedMps) => {
   let best = Infinity;
-  for (const e of item.ent) { const c = dist[e.node] + e.snapM; if (c < best) best = c; }
+  for (const e of item.ent) { const c = dist[e.node] + endSec(g, e.node, e.snapM, speedMps); if (c < best) best = c; }
   return best;
 };
 
@@ -39,11 +46,11 @@ export function isochroneReport(g, origin, prepared, { bands, speedMps }) {
   const snap = g.snap(origin.lat, origin.lon, CONFIG.snap.originM);
   if (!snap) return null;
   const maxMin = Math.max(...bands);
-  const maxCost = maxMin * 60 * speedMps;
-  const dist = dijkstra(g, [{ node: snap.node, cost0: snap.dist }], maxCost);
+  const maxSec = maxMin * 60;
+  const dist = dijkstra(g, [{ node: snap.node, cost0: endSec(g, snap.node, snap.dist, speedMps) }], maxSec, speedMps);
 
   const isochrones = [...bands].sort((a, b) => a - b).map(min => {
-    const r = isochroneGeometry(g, dist, min * 60 * speedMps);
+    const r = isochroneGeometry(g, dist, min * 60);
     return { min, geometry: r.geometry, areaKm2: r.areaM2 / 1e6 };
   });
 
@@ -51,8 +58,8 @@ export function isochroneReport(g, origin, prepared, { bands, speedMps }) {
   for (const [id, slot] of Object.entries(prepared)) {
     const reached = [];
     for (const item of slot.items) {
-      const c = poiCost(item, dist);
-      if (c <= maxCost) reached.push({ poi: item.poi, minutes: c / speedMps / 60 });
+      const c = poiSeconds(g, item, dist, speedMps);
+      if (c <= maxSec) reached.push({ poi: item.poi, minutes: c / 60 });
     }
     reached.sort((a, b) => a.minutes - b.minutes);
     const counts = {};
@@ -131,9 +138,9 @@ class Acc {
 }
 
 export function computeAnalysis({ g, prepared, demand, groups, catIds, bands, speedMps, bbox }) {
-  const maxCost = CONFIG.fieldMaxMin * 60 * speedMps;
+  const maxSec = CONFIG.fieldMaxMin * 60;
   const fields = {};
-  for (const c of catIds) fields[c] = dijkstra(g, prepared[c]?.sources || [], maxCost);
+  for (const c of catIds) fields[c] = dijkstra(g, toSources(g, prepared[c], speedMps), maxSec, speedMps);
 
   const [w, s, e, n] = bbox;
   const proj = makeProjector((s + n) / 2, (w + e) / 2);
@@ -148,8 +155,8 @@ export function computeAnalysis({ g, prepared, demand, groups, catIds, bands, sp
   for (let i = 0; i < demand.n; i++) {
     let sum = 0;
     for (const c of catIds) {
-      const cost = fields[c][demand.node[i]] + demand.snapM[i];
-      const t = cost <= maxCost ? cost / speedMps / 60 : Infinity;
+      const sec = fields[c][demand.node[i]] + endSec(g, demand.node[i], demand.snapM[i], speedMps);
+      const t = sec <= maxSec ? sec / 60 : Infinity;
       times[c] = t; scores[c] = scoreOf(t); sum += scores[c];
     }
     const composite = catIds.length ? sum / catIds.length : 0;
