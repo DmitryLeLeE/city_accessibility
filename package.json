@@ -12,7 +12,8 @@
     "test:e2e": "node tests/e2e/run.mjs",
     "lint": "eslint .",
     "test:all": "npm test && npm run test:e2e",
-    "screenshots": "node tests/e2e/screenshots.mjs"
+    "screenshots": "node tests/e2e/screenshots.mjs",
+    "og": "node tests/e2e/og.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",
@@ -45,6 +46,7 @@
       "css/**",
       "js/**",
       "vendor/**",
+      "img/**",
       "LICENSE",
       "package.json"
     ],

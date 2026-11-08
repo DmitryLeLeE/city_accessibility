@@ -5,7 +5,7 @@ const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 
 const ROOT = path.join(__dirname, '..');
-const SERVE = ['index.html', 'css', 'js', 'vendor']; // только эти пути доступны через app://
+const SERVE = ['index.html', 'css', 'js', 'vendor', 'img']; // только эти пути доступны через app://
 const UA = `CityAccessibility/${app.getVersion()} (https://github.com/DmitryLeLeE/city_accessibility)`;
 
 protocol.registerSchemesAsPrivileged([
