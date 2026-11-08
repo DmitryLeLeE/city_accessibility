@@ -11,7 +11,7 @@ export const CONFIG = {
 
   // Размер тайла загрузки данных в градусах (≈3.3 км × 2.1–3 км)
   tile: { lat: 0.03, lon: 0.045 },
-  concurrency: 3,         // одновременных запросов к Overpass
+  concurrency: 2,         // одновременных запросов к Overpass (меньше — реже 429/504)
   maxAnalysisSpanKm: 8,   // максимальная сторона области анализа
 
   overpass: [
@@ -26,7 +26,7 @@ export const CONFIG = {
     { type: 'nominatim', url: 'https://nominatim.openstreetmap.org/search' },
     { type: 'photon', url: 'https://photon.komoot.io/api/' },
   ],
-  requestTimeoutMs: 70000, // таймаут одной попытки к серверу
+  requestTimeoutMs: 130000, // таймаут одной попытки: больше серверного [timeout:90], иначе тяжёлый тайл обрывается и перебирает все зеркала
   retryRounds: 3,          // сколько раз пройти по всем зеркалам
 
   graph: {

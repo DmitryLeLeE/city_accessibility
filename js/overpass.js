@@ -31,6 +31,25 @@ export async function runOverpass(query, { signal, rounds = CONFIG.retryRounds, 
   }, { signal, rounds, timeoutMs: CONFIG.requestTimeoutMs, onEvent: m => netLogger?.(m) });
 }
 
+/** Проверка зеркал: маленький запрос на каждое, время ответа или причина сбоя. */
+export async function pingMirrors({ fetchImpl, timeoutMs = 15000 } = {}) {
+  const doFetch = fetchImpl || ((...a) => fetch(...a));
+  const q = '[out:json][timeout:10];node(51.5336,46.0343,51.5337,46.0344);out;';
+  return Promise.all(CONFIG.overpass.map(async url => {
+    const t0 = performance.now();
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), timeoutMs);
+    try {
+      const res = await doFetch(url, { method: 'POST', body: 'data=' + encodeURIComponent(q), headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, signal: ctl.signal });
+      if (!res.ok) return { url, ok: false, ms: Math.round(performance.now() - t0), why: 'HTTP ' + res.status };
+      const json = await res.json();
+      return { url, ok: Array.isArray(json.elements), ms: Math.round(performance.now() - t0), why: json.remark || '' };
+    } catch (e) {
+      return { url, ok: false, ms: Math.round(performance.now() - t0), why: e.name === 'AbortError' ? _('таймаут {s} с', { s: Math.round(timeoutMs / 1000) }) : (e.message || String(e)) };
+    } finally { clearTimeout(timer); }
+  }));
+}
+
 // ── тайлы ───────────────────────────────────────────────────────────────────
 
 export function tilesForBBox([w, s, e, n]) {

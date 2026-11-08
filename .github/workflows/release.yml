@@ -31,9 +31,27 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: windows-latest, name: windows, args: --win, required: true }
-          - { os: ubuntu-latest,  name: linux,   args: --linux, required: false }
-          - { os: macos-latest,   name: macos,   args: --mac, required: false }
+          - os: windows-latest
+            name: windows
+            args: --win
+            required: true
+            cache: |
+              ~\AppData\Local\electron\Cache
+              ~\AppData\Local\electron-builder\Cache
+          - os: ubuntu-latest
+            name: linux
+            args: --linux
+            required: false
+            cache: |
+              ~/.cache/electron
+              ~/.cache/electron-builder
+          - os: macos-latest
+            name: macos
+            args: --mac
+            required: false
+            cache: |
+              ~/Library/Caches/electron
+              ~/Library/Caches/electron-builder
     runs-on: ${{ matrix.os }}
     continue-on-error: ${{ !matrix.required }}
     steps:
@@ -43,16 +61,28 @@ jobs:
       - run: npm ci
         env:
           ELECTRON_SKIP_BINARY_DOWNLOAD: '1'   # electron-builder сам скачает нужный Electron
+      # Кэш бинарников Electron/electron-builder: github.com/releases иногда отвечает 504,
+      # поэтому уже скачанное сохраняется даже при неудачной сборке и подхватывается следующим запуском.
+      - uses: actions/cache/restore@v4
+        with:
+          path: ${{ matrix.cache }}
+          key: eb-${{ matrix.name }}-${{ github.run_id }}
+          restore-keys: eb-${{ matrix.name }}-
       - name: Build installers (с повторами при сбоях загрузки)
         shell: bash
         run: |
-          for i in 1 2 3 4; do
+          for i in 1 2 3 4 5 6; do
             npx electron-builder ${{ matrix.args }} --publish never && exit 0
-            echo "Попытка $i не удалась, повтор через 30 с"; sleep 30
+            echo "Попытка $i не удалась, повтор через $((i * 45)) с"; sleep $((i * 45))
           done
           exit 1
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'   # без подписи кода
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: ${{ matrix.cache }}
+          key: eb-${{ matrix.name }}-${{ github.run_id }}
       - uses: actions/upload-artifact@v4
         with:
           name: desktop-${{ matrix.name }}

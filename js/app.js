@@ -1,5 +1,5 @@
 import { CONFIG, CATEGORIES, BAND_COLORS, INDEX_STEPS, PROBLEM_COLOR, WALK } from './config.js';
-import { loadNetwork, loadNodeTags, loadPois, loadBuildings, listAdminLevels, loadAdminAreas, geocode, clearMemoryCache } from './overpass.js';
+import { loadNetwork, loadNodeTags, loadPois, loadBuildings, listAdminLevels, loadAdminAreas, geocode, clearMemoryCache, pingMirrors } from './overpass.js';
 import { buildGraph } from './graph.js';
 import { F_SIGNAL, F_ZEBRA, F_MARKED, F_GATE, F_BLOCKED } from './walkmodel.js';
 import { loadSavedParams, setParams, restoreDefaults } from './params.js';
@@ -774,7 +774,11 @@ async function openMethod() {
     body.innerHTML = methodHTML(state.speedKmh) + `
       <h3>${_('7. Локальный кэш данных')}</h3>
       <p>${_('Фрагменты OSM сохраняются в браузере (IndexedDB) на 7 дней, поэтому повторные расчёты в той же области не обращаются к сети. Сейчас сохранено фрагментов:')} <b id="cache-n">…</b>.</p>
-      <div class="params-actions"><button type="button" id="cache-clear">${_('Очистить кэш')}</button></div>`;
+      <div class="params-actions"><button type="button" id="cache-clear">${_('Очистить кэш')}</button></div>
+      <h3>${_('8. Проверка серверов данных')}</h3>
+      <p>${_('Проверяет, отвечает ли каждое зеркало Overpass из вашего браузера (маленький запрос).')}</p>
+      <div class="params-actions"><button type="button" id="ping-run">${_('Проверить серверы')}</button></div>
+      <div id="ping-out"></div>`;
     $('#cache-n').textContent = await storeCount();
   };
   await draw();
@@ -786,6 +790,12 @@ async function openMethod() {
     } else if (e.target.id === 'params-reset') {
       if (restoreDefaults()) onParamsChanged();
       draw();
+    } else if (e.target.id === 'ping-run') {
+      const out = $('#ping-out');
+      out.textContent = _('Проверяю…');
+      const res = await pingMirrors();
+      out.innerHTML = '<table><tbody>' + res.map(r => `<tr><td>${esc(new URL(r.url).host)}</td><td>${r.ok ? '✔ ' + r.ms + ' ' + _('мс') : '✖ ' + esc(r.why)}</td></tr>`).join('') + '</tbody></table>';
+      logAdd(_('проверка серверов: ') + res.map(r => `${new URL(r.url).host} ${r.ok ? 'ok ' + r.ms + ' ' + _('мс') : r.why}`).join('; '));
     } else if (e.target.id === 'cache-clear') {
       clearMemoryCache(); await storeClear(); draw(); setStatus(_('Кэш очищен.'));
     }
