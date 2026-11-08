@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import osmtogeojson from 'osmtogeojson';
 import { buildGraph, dijkstra } from '../js/graph.js';
 import { wayModel, nodeFlags, inclineFactor, F_SIGNAL, F_ZEBRA, F_BLOCKED } from '../js/walkmodel.js';
-import { WALK } from '../js/config.js';
+import { WALK, websterWait, adamsWait, unsignalizedWait } from '../js/config.js';
 import { isochroneGeometry } from '../js/isochrone.js';
 import { prepareCategories, isochroneReport, buildDemand, computeAnalysis, makeGridGroups, scoreOf, districtsToCSV, analysisToGeoJSON } from '../js/analysis.js';
 import { parsePois, buildingWeight } from '../js/overpass.js';
@@ -186,6 +186,41 @@ test('лестница на пути замедляет в 1.8 раза', () => 
   const way = { id: 5, nodes: [1, 2, 3, 4, 5, 6], geometry: [0, 100, 200, 300, 400, 500].map(x => ll(x, 0)), tags: { highway: 'steps' } };
   const t = T(buildGraph([way], { minComponentNodes: 1 }), [0, 0], [500, 0]);
   assert.ok(Math.abs(t - (500 * WALK.stepsFactor) / SPEED) < 0.01, String(t));
+});
+
+console.log('Формулы ожидания (проверка моделированием)');
+// Детерминированный генератор для воспроизводимости
+function rng(seed) { let x = seed >>> 0; return () => { x ^= x << 13; x >>>= 0; x ^= x >>> 17; x ^= x << 5; x >>>= 0; return x / 4294967296; }; }
+test('Адамс: среднее ожидание в пуассоновском потоке совпадает с моделированием (±3 %)', () => {
+  const r = rng(12345);
+  const lambda = 0.1, tc = 6; // 360 авт/ч, критический интервал 6 с
+  const horizon = 2e6;
+  const veh = [];
+  for (let t = 0; t < horizon; t += -Math.log(1 - r()) / lambda) veh.push(t);
+  let total = 0, count = 0, idx = 0;
+  for (let k = 0; k < 200000; k++) {
+    const t = r() * (horizon - 1000);
+    while (idx > 0 && veh[idx - 1] > t) idx--;
+    while (veh[idx] <= t) idx++;
+    let s = t, i = idx;
+    while (veh[i] - s < tc) { s = veh[i]; i++; }
+    total += s - t; count++;
+  }
+  const sim = total / count, formula = adamsWait(lambda * 3600, tc);
+  assert.ok(Math.abs(sim - formula) / formula < 0.03, `${sim} vs ${formula}`);
+});
+test('Вебстер: среднее ожидание у светофора = численное интегрирование', () => {
+  const C = 90, g = 15;
+  let sum = 0; const n = 900000;
+  for (let i = 0; i < n; i++) { const t = ((i + 0.5) / n) * C; sum += t < g ? 0 : C - t; } // пришёл в красную фазу — ждёт её конца
+  assert.ok(Math.abs(sum / n - websterWait(C, g)) < 1e-3);
+  assert.ok(Math.abs(websterWait(90, 15) - 31.25) < 1e-9);
+});
+test('ожидание растёт с рангом дороги и числом полос; при нулевом потоке — 0', () => {
+  for (let r = 2; r <= 6; r++) assert.ok(WALK.unmarkedWait[r] > WALK.unmarkedWait[r - 1]);
+  assert.ok(unsignalizedWait(5, 6) > unsignalizedWait(5, 2));
+  assert.equal(adamsWait(0, 8), 0);
+  assert.ok(WALK.signalWait[5] > WALK.zebraWait[5]);
 });
 
 console.log('Изохроны');

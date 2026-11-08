@@ -90,23 +90,44 @@ export const PROBLEM_COLOR = '#e34948';
 
 // ── Модель времени пешехода ─────────────────────────────────────────────────
 // Время = длина × множитель(тип пути, покрытие, уклон) / скорость + задержки на узлах.
-// Задержки — ожидаемые (средние) секунды, не зависят от скорости ходьбы.
+// Задержки — математические ожидания, считаются по классическим формулам теории транспортных
+// потоков из параметров ниже (см. docs/METHODOLOGY.md); от скорости ходьбы не зависят.
 // Индексы массивов — ранг дороги для машин:
 //   0 пешеходный путь | 1 service/living_street | 2 residential/unclassified
 //   3 tertiary | 4 secondary | 5 primary | 6 trunk
-export const WALK = {
-  // Ожидание при переходе дороги соответствующего ранга, с
-  signalWait:    [0, 10, 20, 22, 28, 32, 38], // светофор: среднее ожидание зелёной фазы
-  zebraWait:     [0, 1, 2, 3, 5, 7, 10],      // «зебра» без светофора: ожидание просвета/уступания
-  unmarkedWait:  [0, 1, 2, 5, 10, 16, 24],    // переход без разметки/перекрёсток без данных
-  markedFactor: 0.7,                          // размеченный, но нерегулируемый: unmarked × 0.7
-  multiLaneFactor: 1.3,                       // ≥ 4 полос без светофора ждать дольше
-  gateDelay: 4,                               // калитка, шлагбаум, турникет, с
 
-  // Поворот на перекрёстке с одной дороги на другую: в среднем ½ перехода
-  turnCrossingShare: 0.5,
-  straightMaxDeg: 35,     // отклонение, до которого движение считается «прямо»
-  crossLegMinDeg: 30,     // боковая улица — ветка под углом > 30° к направлению движения
+/** Среднее ожидание пешехода у светофора, с. Вебстер/HCM: d = (C − g)² / (2C), равномерное прибытие. */
+export const websterWait = (cycleS, pedGreenS) => (cycleS - pedGreenS) ** 2 / (2 * cycleS);
+
+/**
+ * Среднее ожидание приемлемого интервала в потоке машин, с (формула Адамса):
+ * d = (e^(λ·tc) − λ·tc − 1) / λ, где λ — интенсивность потока (авт/с), tc — критический интервал, с.
+ * Пуассоновский поток, пешеход принимает интервал ≥ tc.
+ */
+export const adamsWait = (flowPerHour, criticalGapS) => {
+  const lambda = flowPerHour / 3600;
+  if (lambda <= 0) return 0;
+  const x = lambda * criticalGapS;
+  return (Math.exp(x) - x - 1) / lambda;
+};
+
+export const WALK = {
+  // --- светофоры: длительность цикла C и пешеходной зелёной фазы g (с) по рангу дороги
+  signalCycle: [0, 40, 60, 75, 90, 100, 110],
+  signalGreen: [0, 12, 15, 15, 15, 15, 15],
+
+  // --- нерегулируемый переход: ширина проезжей части (м), поток обоих направлений (авт/ч)
+  roadWidth: [0, 4, 6, 7, 9, 12, 14],
+  roadFlow:  [0, 30, 150, 400, 700, 1000, 1500],
+  laneWidth: 3.25,          // если в OSM указан lanes — ширина = lanes × laneWidth
+  crossSpeed: 1.2,          // расчётная скорость пешехода при переходе, м/с (HCM)
+  startUpLoss: 3,           // потерянное время на старт, с (HCM)
+  // Переход идёт по половине ширины навстречу потоку одного направления, затем второй половине:
+  // d = 2 · Адамс(q/2, tc), tc = (w/2)/v + t_start
+
+  zebraYield: 0.6,          // доля водителей, уступающих на «зебре» (ожидание × (1 − yield), не меньше 1 с)
+  markedFactor: 0.7,        // размеченный нерегулируемый переход: ожидание × 0.7
+  gateDelay: 4,             // калитка, шлагбаум, турникет, с
 
   stepsFactor: 1.8,
   surface: {
@@ -123,3 +144,16 @@ export const WALK = {
   unknownSidewalkFactor: { 5: 1.15, 6: 1.15 }, // тега sidewalk нет на крупной дороге
   separateSidewalkFactor: 1.1,                  // тротуар нарисован отдельно — предпочитаем его
 };
+
+/** Нерегулируемое ожидание для дороги ранга rank; lanes — число полос из OSM (0 — неизвестно). */
+export function unsignalizedWait(rank, lanes = 0) {
+  if (!rank) return 0;
+  const w = lanes > 0 ? lanes * WALK.laneWidth : WALK.roadWidth[rank];
+  const tc = w / 2 / WALK.crossSpeed + WALK.startUpLoss;
+  return 2 * adamsWait(WALK.roadFlow[rank] / 2, tc);
+}
+
+// Производные таблицы по рангам (используются там, где число полос неизвестно)
+WALK.signalWait = WALK.signalCycle.map((c, r) => (r ? websterWait(c, WALK.signalGreen[r]) : 0));
+WALK.unmarkedWait = WALK.roadWidth.map((_, r) => unsignalizedWait(r));
+WALK.zebraWait = WALK.unmarkedWait.map((w, r) => (r ? Math.max(1, w * (1 - WALK.zebraYield)) : 0));

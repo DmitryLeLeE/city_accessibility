@@ -1,7 +1,7 @@
 // Модель пешехода: множители времени по тегам пути и задержки на узлах.
 // Все числа — в config.js (WALK), здесь только логика.
 
-import { WALK } from './config.js';
+import { WALK, unsignalizedWait } from './config.js';
 
 export const F_SIGNAL = 1, F_ZEBRA = 2, F_MARKED = 4, F_GATE = 8, F_BLOCKED = 16;
 
@@ -76,12 +76,13 @@ export function nodeFlags(tags = {}) {
 }
 
 /** Среднее ожидание при переходе дороги ранга rank (секунды). */
+const unsignalizedCache = new Map();
 export function crossWait(flags, rank, lanes) {
-  let w;
   if (flags & F_SIGNAL) return WALK.signalWait[rank];
-  if (flags & F_ZEBRA) w = WALK.zebraWait[rank];
-  else if (flags & F_MARKED) w = WALK.unmarkedWait[rank] * WALK.markedFactor;
-  else w = WALK.unmarkedWait[rank];
-  if (rank >= 3 && lanes >= 4) w *= WALK.multiLaneFactor;
-  return w;
+  const key = rank * 64 + Math.min(lanes, 63);
+  let u = unsignalizedCache.get(key);
+  if (u === undefined) { u = unsignalizedWait(rank, lanes); unsignalizedCache.set(key, u); }
+  if (flags & F_ZEBRA) return Math.max(1, u * (1 - WALK.zebraYield));
+  if (flags & F_MARKED) return u * WALK.markedFactor;
+  return u;
 }

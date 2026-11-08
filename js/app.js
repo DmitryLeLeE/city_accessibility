@@ -29,10 +29,18 @@ const state = {
 // ── карта ───────────────────────────────────────────────────────────────────
 
 const map = L.map('map', { preferCanvas: true }).setView(CONFIG.defaultCenter, CONFIG.defaultZoom);
-L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
-  subdomains: 'abcd', maxZoom: 19,
-  attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> © <a href="https://carto.com/attributions">CARTO</a>',
-}).addTo(map);
+// Подложки без ключей и регистрации. OSM Standard — с учётом Tile Usage Policy (атрибуция, умеренная нагрузка);
+// светлая серая от Esri удобна для наложений. Для большого трафика подставьте свой провайдер тайлов.
+const baseMaps = {
+  'OpenStreetMap': L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19, attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+  }),
+  'Светлая (Esri)': L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}', {
+    maxZoom: 16, attribution: 'Tiles © Esri — Esri, HERE, Garmin, © OpenStreetMap contributors',
+  }),
+};
+baseMaps['OpenStreetMap'].addTo(map);
+L.control.layers(baseMaps, null, { position: 'topleft', collapsed: true }).addTo(map);
 ['cells', 'districts', 'iso', 'zones', 'poi'].forEach((name, i) => { map.createPane(name).style.zIndex = 410 + i * 10; });
 
 const isoGroup = L.layerGroup().addTo(map);
