@@ -1,5 +1,7 @@
 # City Accessibility
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.24132875.svg)](https://doi.org/10.5281/zenodo.24132875)
+
 A web app for analysing **walking accessibility of urban infrastructure** in any city, built on open [OpenStreetMap](https://www.openstreetmap.org) data. It runs entirely in the browser: no server, API keys or sign-up. The UI is available in English and Russian (RU/EN button in the panel header; `#l=en` in the URL).
 
 **Demo:** https://dmitrylelee.github.io/city_accessibility/ · **Desktop app:** [Releases](https://github.com/DmitryLeLeE/city_accessibility/releases/latest)
@@ -68,7 +70,7 @@ OpenStreetMap completeness limits accuracy; signal cycles and traffic flows are 
 
 ## How to cite
 
-See [CITATION.cff](CITATION.cff) (GitHub's "Cite this repository" button). Releases are archived on Zenodo — the DOI appears in the badge at the top of the README after the first archived release.
+See [CITATION.cff](CITATION.cff) (GitHub's "Cite this repository" button). Releases are archived on Zenodo — the all-versions DOI is [10.5281/zenodo.24132875](https://doi.org/10.5281/zenodo.24132875) (always resolves to the latest); the DOI of version 1.1.0 is [10.5281/zenodo.24133072](https://doi.org/10.5281/zenodo.24133072).
 
 ## Contributing and privacy
 

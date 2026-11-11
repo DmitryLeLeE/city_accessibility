@@ -1,5 +1,7 @@
 # City Accessibility
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.24132875.svg)](https://doi.org/10.5281/zenodo.24132875)
+
 Веб-приложение для анализа **пешей доступности городской инфраструктуры** в любом городе мира. Всё работает в браузере на открытых данных [OpenStreetMap](https://www.openstreetmap.org): без сервера, ключей API и регистрации.
 
 [English version of this README](README.en.md) · **Демо:** https://dmitrylelee.github.io/city_accessibility/ · **Десктопная версия:** [Releases](https://github.com/DmitryLeLeE/city_accessibility/releases/latest) (Windows, Linux, macOS)
@@ -209,7 +211,7 @@ npm run test:e2e # e2e в браузере (Playwright, мок Overpass); нуж
 
 ## Как цитировать
 
-См. [CITATION.cff](CITATION.cff) (кнопка «Cite this repository» на GitHub). Релизы архивируются в Zenodo — DOI указан в бейдже в начале README после первого архивного релиза.
+См. [CITATION.cff](CITATION.cff) (кнопка «Cite this repository» на GitHub). Релизы архивируются в Zenodo — DOI всех версий — [10.5281/zenodo.24132875](https://doi.org/10.5281/zenodo.24132875) (всегда ведёт на последнюю); DOI версии 1.1.0 — [10.5281/zenodo.24133072](https://doi.org/10.5281/zenodo.24133072).
 
 ## Участие и конфиденциальность
 

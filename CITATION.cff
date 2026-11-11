@@ -7,6 +7,11 @@ authors:
     given-names: Dmitry
     orcid: "https://orcid.org/0009-0001-2401-5392"
 version: 1.1.0
+doi: 10.5281/zenodo.24133072
+identifiers:
+  - type: doi
+    value: 10.5281/zenodo.24132875
+    description: Concept DOI, all versions
 date-released: 2026-11-11
 license: MIT
 repository-code: "https://github.com/DmitryLeLeE/city_accessibility"
