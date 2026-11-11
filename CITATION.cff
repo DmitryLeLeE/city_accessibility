@@ -1,0 +1,24 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "City Accessibility: walking accessibility analysis from OpenStreetMap data"
+type: software
+authors:
+  - family-names: Papilin
+    given-names: Dmitry
+version: 1.1.0
+date-released: 2026-11-11
+license: MIT
+repository-code: "https://github.com/DmitryLeLeE/city_accessibility"
+url: "https://dmitrylelee.github.io/city_accessibility/"
+abstract: >-
+  Client-side web and desktop application that computes walking isochrones,
+  accessibility of hospitals, schools and parks, problem zones and district
+  comparison from OpenStreetMap, with a pedestrian model that accounts for
+  crossings and signal delays.
+keywords:
+  - accessibility
+  - isochrones
+  - walkability
+  - OpenStreetMap
+  - GIS
+  - urban planning

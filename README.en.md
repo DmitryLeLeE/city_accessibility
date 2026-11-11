@@ -66,6 +66,10 @@ Desktop installers (Windows installer and portable, Linux AppImage, macOS dmg) a
 
 OpenStreetMap completeness limits accuracy; signal cycles and traffic flows are typical values by road class, not measurements (editable in the app); building levels are a proxy for population, not a census (you can upload your own data); Overpass is a shared free service and may be slow or briefly unavailable (the app switches mirrors automatically).
 
+## How to cite
+
+See [CITATION.cff](CITATION.cff) (GitHub's "Cite this repository" button). Releases are archived on Zenodo — the DOI appears in the badge at the top of the README after the first archived release.
+
 ## Contributing and privacy
 
 [CONTRIBUTING.md](CONTRIBUTING.md), [CHANGELOG.md](CHANGELOG.md), [PRIVACY.md](PRIVACY.md) — which external requests the app makes and what is stored in the browser.

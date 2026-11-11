@@ -207,6 +207,10 @@ npm run test:e2e # e2e в браузере (Playwright, мок Overpass); нуж
 
 Цифровая модель рельефа, велосипед и общественный транспорт, расчёты в Web Worker, рельеф, GTFS, оценка населения из WorldPop, подпись установщиков.
 
+## Как цитировать
+
+См. [CITATION.cff](CITATION.cff) (кнопка «Cite this repository» на GitHub). Релизы архивируются в Zenodo — DOI указан в бейдже в начале README после первого архивного релиза.
+
 ## Участие и конфиденциальность
 
 [CONTRIBUTING.md](CONTRIBUTING.md), [CHANGELOG.md](CHANGELOG.md), [PRIVACY.md](PRIVACY.md) — какие внешние запросы делает приложение и что хранится в браузере.
