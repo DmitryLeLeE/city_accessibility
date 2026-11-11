@@ -2,7 +2,7 @@
   "title": "City Accessibility: walking accessibility analysis from OpenStreetMap data",
   "upload_type": "software",
   "description": "<p>Client-side web and desktop application that computes walking isochrones (5/10/15 min), accessibility of hospitals, schools and parks, problem zones and district comparison from OpenStreetMap data. The pedestrian model accounts for street crossings (signal and unsignalised delays) and sidewalk sides. Includes methodology documentation (RU/EN), scenarios and a test suite.</p>",
-  "creators": [{ "name": "Papilin, Dmitry" }],
+  "creators": [{ "name": "Papilin, Dmitry", "orcid": "0009-0001-2401-5392" }],
   "license": "MIT",
   "keywords": ["accessibility", "isochrones", "walkability", "OpenStreetMap", "GIS", "urban planning"],
   "access_right": "open",
